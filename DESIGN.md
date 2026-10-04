@@ -6,7 +6,7 @@ Pasting an image into pi writes `/tmp/pi-clipboard-<uuid>.<ext>` and inserts the
 
 ## Usage (caller's view)
 
-The user pastes three screenshots while typing a prompt. Each paste puts `[Image #1]`, then `[Image #2]`, and so on into the editor at the cursor, and a band appears above with the last three images, each scaled to at most 6 rows and captioned with its number, dimensions, and size. Clicking a tile opens it centered and near full screen; Esc, q, Enter, the header close control, or a click outside the image closes it. Deleting a token removes its preview. Sending the prompt attaches the pasted images to the message and removes their tokens from the text, so the transcript shows the user's prose and the images.
+The user pastes four screenshots while typing a prompt. Each paste puts `[Image #1]`, then `[Image #2]`, and so on into the editor at the cursor, and a band appears above with one thumbnail plus a clickable label row for every image. The active image renders at most 6 rows. Clicking a label switches the thumbnail, clicking the thumbnail or a token in the editor opens the image centered and near full screen, and Esc, q, Enter, the header close control, or a click outside the image closes it. Deleting a token removes its preview. Sending the prompt attaches the pasted images to the message and removes their tokens from the text, so the transcript shows the user's prose and a compact filmstrip of the images.
 
 The extension consumes these host APIs.
 
@@ -70,7 +70,7 @@ export default function imagePreview(pi: ExtensionAPI): void;
 
 `BandState.text` is the single source of truth for what the band shows. `render(width)` samples `ctx.ui.getEditorText()`, returns the cached lines when the text is unchanged, and otherwise re-derives `images`. Deriving parses tokens with `findImagePaths`, drops non-files, loads each through a module-level `Map<string, LoadedImage>` keyed by `path + "\0" + mtimeMs + "\0" + size`, capped at 16 entries with oldest-first eviction. File reads use `readFileSync` and MIME sniffing uses `detectSupportedImageMimeTypeFromFile` from `@earendil-works/pi-coding-agent`. Only files whose sniffed MIME is `image/*` enter the state, so a missing or unreadable path produces no tile and never an error.
 
-A filmstrip, not a stack. The band renders one row of clickable labels, then the active image's tile at six rows, so any number of images costs seven rows. Clicking a label makes that image active and restarts the auto-hide timer. Clicking the tile calls `ctx.ui.custom` with `ImagePreviewOverlay`, which renders the image at 90% scale centered on a full-screen backdrop and calls `done(undefined)` on Esc, q, Enter, or a click outside the image rect. The full-screen backdrop is load-bearing: pi delivers mouse events to the overlay component only inside its own box, so the blank padding is what makes an outside click reach the component at all. Clicks on the image itself are consumed. A row of side-by-side images is not possible, because `compositeTuiLine` drops the second kitty sequence when two image lines meet horizontally; the probe is in the verification notes.
+A filmstrip, not a stack. The band renders one row of clickable labels, then the active image's tile at six rows, so any number of images costs seven rows. Clicking a label makes that image active and restarts the auto-hide timer. Clicking the tile calls `ctx.ui.custom` with `ImagePreviewOverlay`, which renders the image at 90% scale centered on a full-screen backdrop and calls `done(undefined)` on Esc, q, Enter, or a click outside the image rect. The full-screen backdrop is load-bearing: pi delivers mouse events to the overlay component only inside its own box, so the blank padding is what makes an outside click reach the component at all. Clicks on the image itself are consumed. A row of side-by-side images is not possible, because `compositeTuiLine` drops the second kitty sequence when two image lines meet horizontally; the probe is in the verification notes. The transcript entry reuses the same `selectorLine` in `TranscriptStrip`, so a sent message with ten images is two rows plus one thumbnail, not ten stacked images. `ImageTokenEditor.handleMouse` maps a click to a cursor offset and opens the overlay when that offset falls inside a token or an image path.
 
 Tokens live in a module-level `Map<number, string>` from number to path. `ImageTokenEditor` extends `CustomEditor` and overrides `insertTextAtCursor`. After pi's own paste handler inserts the temp path, the override backspaces exactly that path away, inserts `[Image #N]`, and leaves the cursor after the token, so the path never stays in the editor.
 
@@ -122,8 +122,8 @@ Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the 
 | Auto-hide | the tile collapses to `click to preview` two seconds after a paste, with zero new uploads |
 | Chip click | clicking the chip re-renders the tile |
 | Typing | zero image uploads across a keystroke while the band is collapsed |
-| Transcript image | after send, the transcript segment contains a new image upload |
-| Multi-image filmstrip | two pasted images put both labels in the selector row, the newest is active, and clicking the other label renders that tile |
+| Transcript image | the entry renders one thumbnail plus a label row for every image, and each label click switches the thumbnail |
+| Editor token click | clicking a token or an image path in the editor opens the overlay |
 | Attachment on send | session user message is `[('text', ' x what is this'), ('image', 'image/png')]` |
 | No-graphics fallback | caption plus `[Image: pi-clipboard-verify1.png [image/png] 40x20]`, zero kitty sequences |
 

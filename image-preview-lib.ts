@@ -11,7 +11,6 @@ export interface Cells {
 }
 
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"] as const;
-export const PREVIEW_LIMIT = 3;
 export const TILE_ROWS = 6;
 export const MAX_TILE_COLUMNS = 48;
 export const PREVIEW_VISIBLE_MS = 2000;
@@ -42,7 +41,7 @@ function imageExtension(token: string): string | null {
 	return (IMAGE_EXTENSIONS as readonly string[]).includes(extension) ? extension : null;
 }
 
-export function findImagePaths(text: string, limit = PREVIEW_LIMIT): string[] {
+export function findImagePaths(text: string, limit = Number.POSITIVE_INFINITY): string[] {
 	if (limit <= 0) {
 		return [];
 	}
@@ -100,6 +99,41 @@ export function findImageTokens(text: string): number[] {
 
 export function imageToken(number: number): string {
 	return `[Image #${number}]`;
+}
+
+/** Character offset of a line and column pair in the editor text. */
+export function cursorOffset(text: string, line: number, col: number): number {
+	const lines = text.split("\n");
+	let offset = 0;
+	for (let index = 0; index < line && index < lines.length; index += 1) {
+		offset += (lines[index]?.length ?? 0) + 1;
+	}
+	return offset + col;
+}
+
+/** Token number whose marker covers the offset, or null. */
+export function imageTokenAt(text: string, offset: number): number | null {
+	for (const match of text.matchAll(/\[Image #(\d+)\]/g)) {
+		const start = match.index ?? 0;
+		if (offset >= start && offset < start + match[0].length) {
+			return Number(match[1]);
+		}
+	}
+	return null;
+}
+
+/** Whitespace token covering the offset when that token names an image. */
+export function imagePathAt(text: string, offset: number): string | null {
+	let start = offset;
+	while (start > 0 && !/\s/.test(text[start - 1] ?? "")) {
+		start -= 1;
+	}
+	let end = offset;
+	while (end < text.length && !/\s/.test(text[end] ?? "")) {
+		end += 1;
+	}
+	const word = text.slice(start, end);
+	return findImagePaths(word, 1)[0] ?? null;
 }
 
 export interface PreviewSource {

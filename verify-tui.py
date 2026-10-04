@@ -176,6 +176,12 @@ def main():
     close_press = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}M".encode()
     close_release = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}m".encode()
 
+    def editor_path_click(buf):
+        row = row_of(buf, "pi-clipboard-verify1.png")
+        if row is None:
+            return b""
+        return f"\x1b[<35;10;{row}M".encode() + f"\x1b[<0;10;{row}M".encode() + f"\x1b[<0;10;{row}m".encode()
+
     steps = [
         ("paste", CLIPBOARD_IMAGE.encode(), 1.2),
         ("collapse1", b"", 2.4),
@@ -207,6 +213,8 @@ def main():
         ("collapse5", b"", 2.4),
         ("type_char", b" x", 1.0),
         ("prompt", b" what is this", 0.4),
+        ("editor_click", editor_path_click, 1.0),
+        ("editor_esc", b"\x1b", 1.0),
         ("send", b"\r", 3.0),
     ]
     out, marks = run_pi({}, steps)
@@ -227,6 +235,7 @@ def main():
     check("clicking the close control closes the overlay", b"close" not in between(out, marks, "close_click"))
     check("clicking outside closes the overlay", b"close" not in between(out, marks, "outside_click"))
     check("typing does not repaint the preview", b"\x1b_G" not in between(out, marks, "type_char"))
+    check("clicking the editor path opens the overlay", b"close" in between(out, marks, "editor_click"))
     check("sent image appears in the transcript", b"\x1b_G" in between(out, marks, "send"))
     parts = read_session_parts(SESSION_ID)
     text = next((value for kind, value in (parts or []) if kind == "text"), "")
@@ -237,32 +246,59 @@ def main():
     check("no-graphics terminal keeps the caption", b"214 B" in fallback)
     check("no-graphics terminal renders a text fallback", b"[Image:" in fallback and b"\x1b_G" not in fallback)
 
+    four = [
+        "/tmp/pi-clipboard-a.png",
+        "/tmp/pi-clipboard-b.png",
+        "/tmp/pi-clipboard-c.png",
+        "/tmp/pi-clipboard-d.png",
+    ]
+    for path, (width, height) in zip(four, [(40, 20), (20, 40), (40, 40), (60, 20)]):
+        write_test_png(path, width, height)
+
     def label_click(buf):
-        row = row_of(buf, "20x40")
+        row = row_of(buf, "60x20")
         if row is None:
             return b""
         return f"\x1b[<35;2;{row}M".encode() + f"\x1b[<0;2;{row}M".encode() + f"\x1b[<0;2;{row}m".encode()
 
-    two_out, two_marks = run_pi(
+    def transcript_click(buf):
+        row = row_of(buf, "60x20")
+        if row is None:
+            return b""
+        return f"\x1b[<35;2;{row}M".encode() + f"\x1b[<0;2;{row}M".encode() + f"\x1b[<0;2;{row}m".encode()
+
+    four_out, four_marks = run_pi(
         {},
         [
-            ("paste_one", CLIPBOARD_IMAGE.encode(), 0.8),
-            ("paste_two", b" " + CLIPBOARD_IMAGE_2.encode(), 1.2),
-            ("select_one", label_click, 0.4),
-            ("sample", b"", 1.0),
+            ("paste_a", four[0].encode(), 0.6),
+            ("paste_b", b" " + four[1].encode(), 0.6),
+            ("paste_c", b" " + four[2].encode(), 0.6),
+            ("paste_d", b" " + four[3].encode(), 1.2),
+            ("select_a", label_click, 0.5),
+            ("type_prompt", b" four", 0.3),
+            ("send", b"\r", 3.0),
+            ("transcript_a", transcript_click, 1.0),
         ],
     )
-    pasted = between(two_out, two_marks, "paste_two")
+    pasted = between(four_out, four_marks, "paste_d")
     check(
-        "selector lists every image",
-        pasted.count(b"verify1.png") >= 2 and pasted.count(b"verify2.png") >= 2,
+        "selector lists all four images",
+        all(pasted.count(f"pi-clipboard-{name}.png".encode()) >= 2 for name in ["a", "b", "c", "d"]),
         "each label appears in the editor and in the selector",
     )
-    check("newest image is active", b"20x40" in pasted, "portrait fixture is 20x40")
+    check("newest image is active", b"60x20" in pasted, "last fixture is 60x20")
     check(
         "clicking a label switches the tile",
-        b"c=24,r=6" in between(two_out, two_marks, "select_one"),
-        "landscape fixture is 24x6 cells",
+        b"c=24,r=6" in between(four_out, four_marks, "select_a"),
+        "40x20 fixture is 24x6 cells",
+    )
+    sent = between(four_out, four_marks, "send")
+    check("transcript keeps one row of labels", all(f"pi-clipboard-{name}.png".encode() in sent for name in ["a", "b", "c", "d"]))
+    check("transcript renders one thumbnail", sent.count(b"f=100") <= 2, "at most a band tail plus the strip")
+    check(
+        "clicking a transcript label switches its thumbnail",
+        b"c=24,r=6" in between(four_out, four_marks, "transcript_a"),
+        "first fixture is 24x6 cells",
     )
 
     print(f"\n{len(failures)} failure(s)")

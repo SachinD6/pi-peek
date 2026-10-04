@@ -5,18 +5,19 @@ import { basename, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CustomEditor, detectSupportedImageMimeTypeFromFile } from "@earendil-works/pi-coding-agent";
 import type { Component, TuiMouseEvent, TuiMouseEventResult, TUI } from "@earendil-works/pi-tui";
-import { Image, Key, VStack, Text, getImageDimensions, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Image, Key, getImageDimensions, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
-	PREVIEW_LIMIT,
 	PREVIEW_VISIBLE_MS,
 	chipLabel,
+	cursorOffset,
 	findClipboardPaths,
 	findImagePaths,
 	findImageTokens,
 	fitCells,
 	formatBytes,
-	formatCaption,
+	imagePathAt,
 	imageToken,
+	imageTokenAt,
 	isClipboardImagePath,
 	MAX_TILE_COLUMNS,
 	MIN_COLUMNS,
@@ -30,10 +31,68 @@ import type { Cells, PreviewSource, Size } from "./image-preview-lib.ts";
 const WIDGET_KEY = "image-preview";
 const LOADED_CACHE_LIMIT = 16;
 const TILE_CACHE_LIMIT = 16;
-const TRANSCRIPT_ROWS = 8;
-const TRANSCRIPT_COLUMNS = 72;
 const OVERLAY_SCALE = 0.9;
 const OVERLAY_CHROME_ROWS = 2;
+
+interface SelectorRange {
+	start: number;
+	end: number;
+	index: number;
+}
+
+interface SelectorItem {
+	number: number | null;
+	name: string;
+	size: Size;
+	bytes: number;
+}
+
+/** One row of clickable labels plus the active image's size, truncated to fit. */
+function selectorLine(
+	theme: Theme,
+	images: readonly SelectorItem[],
+	active: number,
+	width: number,
+): { text: string; ranges: SelectorRange[] } {
+	const ranges: SelectorRange[] = [];
+	let column = 0;
+	let text = "";
+	let hidden = 0;
+	for (let index = 0; index < images.length; index += 1) {
+		const image = images[index];
+		if (image === undefined) {
+			continue;
+		}
+		const label = image.number === null ? image.name : imageToken(image.number);
+		const styled = index === active ? theme.fg("accent", label) : theme.fg("muted", label);
+		const separator = index === 0 ? "" : "  ";
+		const entryWidth = visibleWidth(separator) + visibleWidth(styled);
+		if (column + entryWidth > width) {
+			hidden = images.length - index;
+			break;
+		}
+		text += separator + styled;
+		ranges.push({ start: column + visibleWidth(separator), end: column + entryWidth, index });
+		column += entryWidth;
+	}
+	const activeImage = images[active];
+	if (activeImage !== undefined) {
+		const styledMeta = theme.fg(
+			"dim",
+			` \u00b7 ${activeImage.size.width}x${activeImage.size.height} \u00b7 ${formatBytes(activeImage.bytes)}`,
+		);
+		if (column + visibleWidth(styledMeta) <= width) {
+			text += styledMeta;
+		}
+	}
+	if (hidden > 0) {
+		const more = theme.fg("dim", ` +${hidden}`);
+		if (column + visibleWidth(more) <= width) {
+			text += more;
+		}
+	}
+	return { text, ranges };
+}
 
 interface LoadedImage {
 	path: string;
@@ -161,7 +220,7 @@ function previewSources(text: string): PreviewSource[] {
 			sources.push({ path, number: null });
 		}
 	}
-	return sources.slice(0, PREVIEW_LIMIT);
+	return sources;
 }
 
 const pendingTranscriptImages: TranscriptImage[][] = [];
@@ -211,6 +270,8 @@ function readTranscriptImage(path: string, mimeType: string) {
 }
 
 /** Replaces the path pi just pasted with `[Image #N]`, keeping the editor's cursor in place. */class ImageTokenEditor extends CustomEditor {
+	onImageClick?: (target: { number: number } | { path: string }) => void;
+
 	insertTextAtCursor(text: string): void {
 		const wasEmpty = this.getText().trim() === "";
 		super.insertTextAtCursor(text);
@@ -223,6 +284,46 @@ function readTranscriptImage(path: string, mimeType: string) {
 			// The path stays in the editor and still previews and attaches on send.
 		}
 	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const result = super.handleMouse(event);
+		if (event.type !== "click" || this.onImageClick === undefined) {
+			return result;
+		}
+		const text = this.getText();
+		const cursor = this.getCursor();
+		const offset = cursorOffset(text, cursor.line, cursor.col);
+		const number = imageTokenAt(text, offset);
+		if (number !== null) {
+			this.onImageClick({ number });
+			return result;
+		}
+		const path = imagePathAt(text, offset);
+		if (path !== null) {
+			this.onImageClick({ path });
+		}
+		return result;
+	}
+}
+function showImageOverlay(ctx: ExtensionContext, image: LoadedImage): void {
+	void ctx.ui
+		.custom<undefined>(
+			(tui, theme, _keybindings, done) => new ImagePreviewOverlay(tui, theme, image, done),
+			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "center" } },
+		)
+		.catch(() => undefined);
+}
+
+async function openEditorImage(ctx: ExtensionContext, target: { number: number } | { path: string }): Promise<void> {
+	const path = "number" in target ? clipboardImages.get(target.number) : target.path;
+	if (path === undefined) {
+		return;
+	}
+	const image = await loadImage(isAbsolute(path) ? path : resolve(ctx.cwd, path));
+	if (image === null) {
+		return;
+	}
+	showImageOverlay(ctx, image);
 }
 
 class ImagePreviewOverlay implements Component {
@@ -468,38 +569,10 @@ class ImagePreviewBand implements Component {
 	}
 
 	/** One row of clickable labels plus the active image's size, truncated to fit. */
-	private buildSelector(lines: string[], width: number, active: number): Array<{ start: number; end: number; index: number }> {
-		const ranges: Array<{ start: number; end: number; index: number }> = [];
-		let column = 0;
-		let text = "";
-		for (let index = 0; index < this.state.images.length; index += 1) {
-			const image = this.state.images[index];
-			if (image === undefined) {
-				continue;
-			}
-			const label = image.number === null ? image.name : imageToken(image.number);
-			const styled = index === active ? this.theme.fg("accent", label) : this.theme.fg("muted", label);
-			const separator = index === 0 ? "" : "  ";
-			const entryWidth = visibleWidth(separator) + visibleWidth(styled);
-			if (column + entryWidth > width) {
-				break;
-			}
-			text += separator + styled;
-			ranges.push({ start: column + visibleWidth(separator), end: column + entryWidth, index });
-			column += entryWidth;
-		}
-		const activeImage = this.state.images[active];
-		if (activeImage !== undefined) {
-			const styledMeta = this.theme.fg(
-				"dim",
-				` \u00b7 ${activeImage.size.width}x${activeImage.size.height} \u00b7 ${formatBytes(activeImage.bytes)}`,
-			);
-			if (column + visibleWidth(styledMeta) <= width) {
-				text += styledMeta;
-			}
-		}
-		lines.push(text);
-		return ranges;
+	private buildSelector(lines: string[], width: number, active: number): SelectorRange[] {
+		const selector = selectorLine(this.theme, this.state.images, active, width);
+		lines.push(selector.text);
+		return selector.ranges;
 	}
 
 	private tileFor(image: LoadedImage, cells: Cells): Image {
@@ -521,12 +594,100 @@ class ImagePreviewBand implements Component {
 	}
 
 	private openOverlay(image: LoadedImage): void {
-		void this.ctx.ui
-			.custom<undefined>(
-				(tui, theme, _keybindings, done) => new ImagePreviewOverlay(tui, theme, image, done),
-				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "center" } },
-			)
-			.catch(() => undefined);
+		showImageOverlay(this.ctx, image);
+	}
+}
+
+let uiContext: ExtensionContext | undefined;
+
+function transcriptLoaded(image: TranscriptImage, loaded: { base64: string; widthPx: number; heightPx: number }): LoadedImage {
+	return {
+		path: image.path,
+		name: image.name,
+		mimeType: image.mimeType,
+		size: { width: loaded.widthPx, height: loaded.heightPx },
+		bytes: image.bytes,
+		base64: loaded.base64,
+		mtimeMs: 0,
+		number: image.number,
+	};
+}
+
+/** The same filmstrip as the band, rendered inside the transcript entry. */
+class TranscriptStrip implements Component {
+	private readonly ctx: ExtensionContext | undefined;
+	private readonly theme: Theme;
+	private readonly images: TranscriptImage[];
+	private active: number;
+	private lines: string[] | null = null;
+	private linesWidth = -1;
+	private ranges: SelectorRange[] = [];
+	private tileTop = 1;
+	private tileBottom = 1;
+
+	constructor(ctx: ExtensionContext | undefined, theme: Theme, images: TranscriptImage[]) {
+		this.ctx = ctx;
+		this.theme = theme;
+		this.images = images;
+		this.active = images.length - 1;
+	}
+
+	render(width: number): string[] {
+		if (this.lines !== null && this.linesWidth === width) {
+			return this.lines;
+		}
+		const items: SelectorItem[] = this.images.map((image) => ({
+			number: image.number,
+			name: image.name,
+			size: { width: image.widthPx, height: image.heightPx },
+			bytes: image.bytes,
+		}));
+		const selector = selectorLine(this.theme, items, this.active, width);
+		this.ranges = selector.ranges;
+		const lines = [selector.text];
+		this.tileTop = 1;
+		const image = this.images[this.active];
+		if (image !== undefined) {
+			const loaded = readTranscriptImage(image.path, image.mimeType);
+			if (loaded === null) {
+				lines.push(this.theme.fg("dim", "(temp file removed)"));
+			} else {
+				const cells = fitCells({ width: loaded.widthPx, height: loaded.heightPx }, TILE_ROWS, MAX_TILE_COLUMNS);
+				lines.push(...createImage(this.theme, transcriptLoaded(image, loaded), cells).render(width));
+			}
+		}
+		this.tileBottom = lines.length;
+		this.lines = lines;
+		this.linesWidth = width;
+		return lines;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (event.type !== "click") {
+			return undefined;
+		}
+		if (event.y === 0) {
+			const hit = this.ranges.find((range) => event.x >= range.start && event.x < range.end);
+			if (hit !== undefined) {
+				this.active = hit.index;
+				this.lines = null;
+				return { handled: true, render: true };
+			}
+			return { handled: true };
+		}
+		if (event.y >= this.tileTop && event.y < this.tileBottom && this.ctx !== undefined) {
+			const image = this.images[this.active];
+			const loaded = image === undefined ? null : readTranscriptImage(image.path, image.mimeType);
+			if (image !== undefined && loaded !== null) {
+				showImageOverlay(this.ctx, transcriptLoaded(image, loaded));
+			}
+			return { handled: true };
+		}
+		return undefined;
+	}
+
+	invalidate(): void {
+		this.lines = null;
 	}
 }
 
@@ -535,8 +696,15 @@ export default function imagePreview(pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") {
 			return;
 		}
+		uiContext = ctx;
 		resetClipboardImages();
-		ctx.ui.setEditorComponent((tui, theme, keybindings) => new ImageTokenEditor(tui, theme, keybindings));
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+			const editor = new ImageTokenEditor(tui, theme, keybindings);
+			editor.onImageClick = (target) => {
+				void openEditorImage(ctx, target);
+			};
+			return editor;
+		});
 		ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => new ImagePreviewBand(ctx, tui, theme), {
 			placement: "aboveEditor",
 		});
@@ -565,27 +733,7 @@ export default function imagePreview(pi: ExtensionAPI): void {
 		if (images.length === 0) {
 			return undefined;
 		}
-		const box = new VStack([], { gap: 1 });
-		for (const image of images) {
-			const label = `${image.number === null ? "" : `${imageToken(image.number)} `}${image.name} \u00b7 ${image.widthPx}x${image.heightPx} \u00b7 ${formatBytes(image.bytes)}`;
-			box.addChild(new Text(theme.fg("muted", label), 0, 0));
-			const loaded = readTranscriptImage(image.path, image.mimeType);
-			if (loaded === null) {
-				box.addChild(new Text(theme.fg("dim", "(temp file removed)"), 0, 0));
-				continue;
-			}
-			const cells = fitCells({ width: loaded.widthPx, height: loaded.heightPx }, TRANSCRIPT_ROWS, TRANSCRIPT_COLUMNS);
-			box.addChild(
-				new Image(
-					loaded.base64,
-					image.mimeType,
-					{ fallbackColor: (text: string) => theme.fg("muted", text) },
-					{ maxWidthCells: cells.columns, maxHeightCells: cells.rows, filename: image.name },
-					{ widthPx: loaded.widthPx, heightPx: loaded.heightPx },
-				),
-			);
-		}
-		return box;
+		return new TranscriptStrip(uiContext, theme, images);
 	});
 
 	pi.on("input", async (event) => {

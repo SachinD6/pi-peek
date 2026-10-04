@@ -6,16 +6,18 @@ import {
 	IMAGE_EXTENSIONS,
 	MAX_TILE_COLUMNS,
 	MIN_COLUMNS,
-	PREVIEW_LIMIT,
 	PREVIEW_VISIBLE_MS,
 	TILE_ROWS,
 	chipLabel,
+	cursorOffset,
 	findClipboardPaths,
 	findImagePaths,
 	findImageTokens,
 	fitCells,
 	formatCaption,
+	imagePathAt,
 	imageToken,
+	imageTokenAt,
 	isClipboardImagePath,
 	removePaths,
 	rewriteInsertedImage,
@@ -25,7 +27,6 @@ import {
 
 test("constants match the preview contract", () => {
 	assert.deepEqual(IMAGE_EXTENSIONS, ["png", "jpg", "jpeg", "gif", "webp"]);
-	assert.equal(PREVIEW_LIMIT, 3);
 	assert.equal(TILE_ROWS, 6);
 	assert.equal(MAX_TILE_COLUMNS, 48);
 	assert.equal(CELL_ASPECT, 2);
@@ -52,9 +53,9 @@ test("findImagePaths drops tokens that are not image files", () => {
 	assert.deepEqual(findImagePaths("   "), []);
 });
 
-test("findImagePaths dedupes and caps at the limit", () => {
+test("findImagePaths dedupes and caps only when asked", () => {
 	assert.deepEqual(findImagePaths("a.png b.png a.png"), ["a.png", "b.png"]);
-	assert.deepEqual(findImagePaths("a.png b.png c.png d.png"), ["a.png", "b.png", "c.png"]);
+	assert.deepEqual(findImagePaths("a.png b.png c.png d.png"), ["a.png", "b.png", "c.png", "d.png"]);
 	assert.deepEqual(findImagePaths("a.png b.png c.png", 2), ["a.png", "b.png"]);
 	assert.deepEqual(findImagePaths("a.png", 0), []);
 });
@@ -112,6 +113,27 @@ test("formatCaption prints index, pixel size and byte size", () => {
 	assert.equal(formatCaption(2, null, 512), "#2 \u00b7 ?x? \u00b7 512 B");
 	assert.equal(formatCaption(3, { width: 1, height: 2 }, 1048576), "#3 \u00b7 1x2 \u00b7 1.0 MB");
 	assert.equal(formatCaption(4, { width: 10, height: 10 }, 2048), "#4 \u00b7 10x10 \u00b7 2.0 KB");
+});
+
+test("cursorOffset maps a line and column to a character offset", () => {
+	assert.equal(cursorOffset("ab\ncd", 0, 0), 0);
+	assert.equal(cursorOffset("ab\ncd", 1, 0), 3);
+	assert.equal(cursorOffset("ab\ncd", 1, 1), 4);
+	assert.equal(cursorOffset("", 0, 0), 0);
+});
+
+test("imageTokenAt finds the marker under the cursor", () => {
+	assert.equal(imageTokenAt("see [Image #2] here", 6), 2);
+	assert.equal(imageTokenAt("see [Image #2] here", 15), null);
+	assert.equal(imageTokenAt("see [Image #2] here", 16), null);
+	assert.equal(imageTokenAt("no markers", 3), null);
+});
+
+test("imagePathAt finds the image token under the cursor", () => {
+	assert.equal(imagePathAt("look /tmp/shot.png here", 8), "/tmp/shot.png");
+	assert.equal(imagePathAt("look /tmp/shot.png here", 14), "/tmp/shot.png");
+	assert.equal(imagePathAt("look /tmp/shot.png here", 21), null);
+	assert.equal(imagePathAt("look elsewhere", 5), null);
 });
 
 test("imageToken and findImageTokens round-trip the numbered markers", () => {
