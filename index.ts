@@ -5,7 +5,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { detectSupportedImageMimeTypeFromFile } from "@earendil-works/pi-coding-agent";
 import type { Component, TuiMouseEvent, TuiMouseEventResult, TUI } from "@earendil-works/pi-tui";
-import { Image, getImageDimensions } from "@earendil-works/pi-tui";
+import { Image, Key, getImageDimensions, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	findClipboardPaths,
 	findImagePaths,
@@ -25,7 +25,7 @@ const HOVER_COLLAPSE_MS = 500;
 const LOADED_CACHE_LIMIT = 16;
 const TILE_CACHE_LIMIT = 16;
 const OVERLAY_SCALE = 0.9;
-const OVERLAY_HINT_ROWS = 1;
+const OVERLAY_CHROME_ROWS = 2;
 
 interface LoadedImage {
 	path: string;
@@ -150,18 +150,39 @@ class ImagePreviewOverlay implements Component {
 		if (this.lines !== null && this.linesWidth === width) {
 			return this.lines;
 		}
-		const rows = Math.max(1, Math.floor(this.tui.terminal.rows * OVERLAY_SCALE) - OVERLAY_HINT_ROWS);
+		const rows = Math.max(1, Math.floor(this.tui.terminal.rows * OVERLAY_SCALE) - OVERLAY_CHROME_ROWS);
 		const columns = Math.max(MIN_COLUMNS, Math.round(width * OVERLAY_SCALE));
 		const cells = fitCells(this.image.size, rows, columns);
-		this.lines = [...createImage(this.theme, this.image, cells).render(width), this.theme.fg("dim", "Esc to close")];
+		const close = this.theme.fg("muted", "\u2715 close");
+		const name = truncateToWidth(this.image.name, Math.max(1, width - visibleWidth(close) - 2), "\u2026");
+		const gap = Math.max(1, width - visibleWidth(name) - visibleWidth(close));
+		this.lines = [
+			`${this.theme.fg("accent", name)}${" ".repeat(gap)}${close}`,
+			...createImage(this.theme, this.image, cells).render(width),
+			this.theme.fg("dim", "Esc \u00b7 q \u00b7 \u2715 close"),
+		];
 		this.linesWidth = width;
 		return this.lines;
 	}
 
 	handleInput(data: string): void {
-		if (data === "\x1b" || data === "q" || data === "Q" || data === "\r") {
+		if (matchesKey(data, Key.escape) || matchesKey(data, Key.enter) || data === "q" || data === "Q") {
 			this.done(undefined);
 		}
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		// The header row holds the close control, and its whole row is a hit target.
+		if (event.type === "click" && event.y === 0) {
+			this.done(undefined);
+			return { handled: true };
+		}
+		// Consume pointer events so a click cannot fall through to transcript selection and
+		// replace whatever image the user has on the system clipboard.
+		if (event.type === "press" || event.type === "click" || event.type === "release") {
+			return { handled: true };
+		}
+		return undefined;
 	}
 
 	invalidate(): void {

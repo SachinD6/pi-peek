@@ -2,13 +2,17 @@
 """End-to-end checks for the image preview extension against a real pi TUI.
 
 Spawns pi in a pty at 120x40 with this directory symlinked into
-~/.pi/agent/extensions/image-preview, types a clipboard-shaped image path,
-and asserts what the terminal receives. Exits non-zero on the first failure.
+~/.pi/agent/extensions/image-preview, drives keys and mouse events, and
+asserts what the terminal receives. Exits non-zero on the first failure.
+
+This script never touches the system clipboard. It types the fixture path as
+text, which is exactly what pi's paste handler inserts.
 
 Usage: python3 verify-tui.py
 """
 import glob
 import json
+import math
 import os
 import pty
 import select
@@ -27,6 +31,7 @@ LINES = 40
 # the six image rows follow, so row 32 is the middle of the first tile.
 TILE_ROW = 32
 TILE_COLUMN = 5
+CLOSE_COLUMN = 110
 
 failures = []
 
@@ -35,6 +40,23 @@ def check(name, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'}  {name}{'  ' + detail if detail else ''}")
     if not ok:
         failures.append(name)
+
+
+def fit_cells(width, height, max_rows, max_columns):
+    rows = max_rows
+    columns = round(rows * 2 * width / height)
+    if columns > max_columns:
+        columns = max_columns
+        rows = round(max_columns * height / (2 * width))
+    return max(8, columns), max(1, rows)
+
+
+def overlay_top_row():
+    """First row of the centered overlay, matching the component's own geometry."""
+    overlay_width = round(COLUMNS * 0.9)
+    inner_columns = max(8, round(overlay_width * 0.9))
+    image_rows = fit_cells(40, 20, math.floor(LINES * 0.9) - 2, inner_columns)[1]
+    return (LINES - (image_rows + 2)) // 2 + 1
 
 
 def write_test_png(path):
@@ -55,7 +77,8 @@ def write_test_png(path):
     return len(png)
 
 
-def run_pi(env_extra, keys, wait_before_keys=2.0):
+def run_pi(env_extra, steps):
+    """steps is a list of (label, key_bytes, pause_seconds)."""
     env = dict(os.environ)
     env["TERM"] = "xterm-kitty"
     env.setdefault("KITTY_WINDOW_ID", "1")
@@ -83,13 +106,14 @@ def run_pi(env_extra, keys, wait_before_keys=2.0):
                     return
                 buf.extend(data)
 
-    def mark():
-        return len(buf)
-
     drain(7)
-    for key, pause in keys:
-        os.write(fd, key)
+    marks = {"start": len(buf)}
+    for label, key, pause in steps:
+        marks[f"{label}_in"] = len(buf)
+        if key:
+            os.write(fd, key)
         drain(pause)
+        marks[label] = len(buf)
     os.write(fd, b"\x03")
     time.sleep(0.4)
     os.write(fd, b"\x03")
@@ -98,7 +122,11 @@ def run_pi(env_extra, keys, wait_before_keys=2.0):
         os.kill(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    return bytes(buf), mark
+    return bytes(buf), marks
+
+
+def between(buf, marks, label):
+    return buf[marks[f"{label}_in"]:marks[label]]
 
 
 def read_session_parts(session_id):
@@ -125,30 +153,42 @@ def main():
     move = f"\x1b[<35;{TILE_COLUMN};{TILE_ROW}M".encode()
     press = f"\x1b[<0;{TILE_COLUMN};{TILE_ROW}M".encode()
     release = f"\x1b[<0;{TILE_COLUMN};{TILE_ROW}m".encode()
-    keys = [
-        (CLIPBOARD_IMAGE.encode(), 2.0),
-        (move, 0.6),
-        (move, 0.5),
-        (press, 0.2),
-        (release, 1.0),
-        (b"\x1b", 1.0),
-        (b" what is this", 0.4),
-        (b"\r", 3.0),
-    ]
-    out, _ = run_pi({}, keys)
+    close_press = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}M".encode()
+    close_release = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}m".encode()
 
-    caption = b"40x20" in out and b"214 B" in out
-    check("band caption renders", caption, "#1 . 40x20 . 214 B")
+    steps = [
+        ("paste", CLIPBOARD_IMAGE.encode(), 2.0),
+        ("move", move, 0.6),
+        ("move_again", move, 0.5),
+        ("open_csiu", press, 0.2),
+        ("open_csiu_release", release, 1.0),
+        ("esc_csiu", b"\x1b[27u", 1.0),
+        ("open_plain", press, 0.2),
+        ("open_plain_release", release, 1.0),
+        ("esc_plain", b"\x1b", 1.0),
+        ("open_click", press, 0.2),
+        ("open_click_release", release, 1.0),
+        ("close_click_press", close_press, 0.2),
+        ("close_click", close_release, 1.0),
+        ("prompt", b" what is this", 0.4),
+        ("send", b"\r", 3.0),
+    ]
+    out, marks = run_pi({}, steps)
+
+    check("band caption renders", b"40x20" in out and b"214 B" in out, "#1 . 40x20 . 214 B")
     check("band image uses kitty protocol", b"\x1b_G" in out)
     check("hover enlarges to 12 rows", b"r=12," in out)
     check("hover collapses back to 6 rows", b"r=6," in out)
-    check("click opens the full-screen overlay", b"Esc to close" in out)
+    check("overlay shows the close controls", b"close" in between(out, marks, "open_csiu_release"))
+    check("kitty-protocol escape closes the overlay", b"close" not in between(out, marks, "esc_csiu"))
+    check("plain escape closes the overlay", b"close" not in between(out, marks, "esc_plain"))
+    check("clicking the close control closes the overlay", b"close" not in between(out, marks, "close_click"))
     parts = read_session_parts(SESSION_ID)
     text = next((value for kind, value in (parts or []) if kind == "text"), "")
     check("prompt text has the clipboard path stripped", parts is not None and "pi-clipboard" not in (text or ""), repr(text)[:60])
     check("prompt carries the image part", any(kind == "image" and value == "image/png" for kind, value in (parts or [])), str(parts)[:80])
 
-    fallback, _ = run_pi({"PI_IMAGE_PROTOCOL": "none"}, [(CLIPBOARD_IMAGE.encode(), 2.0)])
+    fallback, _ = run_pi({"PI_IMAGE_PROTOCOL": "none"}, [("paste", CLIPBOARD_IMAGE.encode(), 2.0)])
     check("no-graphics terminal keeps the caption", b"214 B" in fallback)
     check("no-graphics terminal renders a text fallback", b"[Image:" in fallback and b"\x1b_G" not in fallback)
 

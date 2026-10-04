@@ -113,10 +113,12 @@ Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the 
 | --- | --- |
 | Band caption and kitty placement | caption `#1 · 40x20 · 214 B` followed by `_Ga=T,f=100,...,c=24,r=6` |
 | Hover enlarge and collapse | `r=12` after a mouse move, `r=6` after the 500 ms timer |
-| Click overlay | overlay draws and shows `Esc to close`, Esc removes it |
+| Click overlay | overlay draws the image, names it, and shows the close controls; Esc, q, Enter, and a click on the header row all close it |
 | Attachment on send | session user message is `[('text', ' what is this'), ('image', 'image/png')]` |
 | No-graphics fallback | caption plus `[Image: pi-clipboard-verify1.png [image/png] 40x20]`, zero kitty sequences |
 
 Two findings from verification that the sketch had wrong. The first symlink attempt linked the single entry file, and the loader failed with `Cannot find module './image-preview-lib.ts'` because relative imports resolve against the link path. The install is a directory symlink with `index.ts`. Mouse move events do reach a `setWidget` component, so hover works as designed.
 
 The kitty sequence count alone was misleading at first because pi's startup logo also uses the kitty protocol. The caption row is the reliable marker.
+
+Two more verification lessons. The first version of the close checks asserted against the whole capture instead of the segment between steps, so `Esc closes the overlay` passed while the overlay stayed open. The harness now slices the buffer per step. And a real Kitty terminal sends Escape as the CSI-u sequence `\x1b[27u`, not a bare `\x1b`, which is why the first shipped handler failed on a real terminal while passing in the pty. The handler now uses `matchesKey(data, Key.escape)` and the harness sends the real sequence.
