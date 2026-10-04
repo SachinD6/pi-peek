@@ -15,6 +15,7 @@ import json
 import math
 import os
 import pty
+import re
 import select
 import signal
 import struct
@@ -27,11 +28,12 @@ CLIPBOARD_IMAGE = "/tmp/pi-clipboard-verify1.png"
 SESSION_ID = "verify-preview"
 COLUMNS = 120
 LINES = 40
-# The band sits above the editor. At 120x40 the caption lands near row 29 and
-# the six image rows follow, so row 32 is the middle of the first tile.
+# The band sits above the editor. At 120x40 the captioned tile lands near row
+# 29, so row 32 is inside the first image.
 TILE_ROW = 32
 TILE_COLUMN = 5
 CLOSE_COLUMN = 100
+CHIP_PAUSE = 0.6
 
 failures = []
 
@@ -58,6 +60,23 @@ def overlay_top_row():
     return (LINES - (image_rows + 2)) // 2 + 1
 
 
+def row_of(buf, needle):
+    text = buf.decode("utf-8", "replace")
+    index = text.rfind(needle)
+    if index == -1:
+        return None
+    rows = re.findall(r"\x1b\[(\d+);(\d+)H", text[:index])
+    return int(rows[-1][0]) if rows else None
+
+
+def chip_click(buf):
+    """Click the collapsed chip, which is the last thing on screen when it is shown."""
+    row = row_of(buf, "click to preview")
+    if row is None:
+        return b""
+    return f"\x1b[<35;8;{row}M".encode() + f"\x1b[<0;8;{row}M".encode() + f"\x1b[<0;8;{row}m".encode()
+
+
 def write_test_png(path):
     width, height = 40, 20
     raw = b"".join(b"\x00" + bytes([(x * 6) % 256 for x in range(width * 3)]) for _ in range(height))
@@ -77,7 +96,7 @@ def write_test_png(path):
 
 
 def run_pi(env_extra, steps):
-    """steps is a list of (label, key_bytes, pause_seconds)."""
+    """steps is a list of (label, key_bytes_or_callable, pause_seconds)."""
     env = dict(os.environ)
     env["TERM"] = "xterm-kitty"
     env.setdefault("KITTY_WINDOW_ID", "1")
@@ -109,8 +128,9 @@ def run_pi(env_extra, steps):
     marks = {"start": len(buf)}
     for label, key, pause in steps:
         marks[f"{label}_in"] = len(buf)
-        if key:
-            os.write(fd, key)
+        payload = key(bytes(buf)) if callable(key) else key
+        if payload:
+            os.write(fd, payload)
         drain(pause)
         marks[label] = len(buf)
     os.write(fd, b"\x03")
@@ -154,48 +174,60 @@ def main():
     release = f"\x1b[<0;{TILE_COLUMN};{TILE_ROW}m".encode()
     close_press = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}M".encode()
     close_release = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}m".encode()
-    outside_press = b"\x1b[<0;2;2M"
-    outside_release = b"\x1b[<0;2;2m"
 
     steps = [
-        ("paste", CLIPBOARD_IMAGE.encode(), 2.0),
-        ("move", move, 0.8),
+        ("paste", CLIPBOARD_IMAGE.encode(), 1.2),
+        ("move", move, 0.3),
         ("open_csiu", press, 0.2),
         ("open_csiu_release", release, 1.0),
         ("esc_csiu", b"\x1b[27u", 1.0),
-        ("open_plain", move, 0.3),
-        ("open_plain_press", press, 0.2),
+        ("collapse1", b"", 2.4),
+        ("expand1", chip_click, CHIP_PAUSE),
+        ("move1", move, 0.3),
+        ("open_plain", press, 0.2),
         ("open_plain_release", release, 1.0),
         ("esc_plain", b"\x1b", 1.0),
-        ("open_click", move, 0.3),
-        ("open_click_press", press, 0.2),
+        ("collapse2", b"", 2.4),
+        ("expand2", chip_click, CHIP_PAUSE),
+        ("move2", move, 0.3),
+        ("open_click", press, 0.2),
         ("open_click_release", release, 1.0),
         ("close_click_press", close_press, 0.2),
         ("close_click", close_release, 1.0),
-        ("open_outside", move, 0.3),
-        ("open_outside_press", press, 0.2),
+        ("collapse3", b"", 2.4),
+        ("expand3", chip_click, CHIP_PAUSE),
+        ("move3", move, 0.3),
+        ("open_outside", press, 0.2),
         ("open_outside_release", release, 1.0),
-        ("outside_press", outside_press, 0.2),
-        ("outside_click", outside_release, 1.0),
+        ("outside_press", b"\x1b[<0;2;2M", 0.2),
+        ("outside_click", b"\x1b[<0;2;2m", 1.0),
+        ("collapse4", b"", 2.4),
+        ("type_char", b" x", 1.0),
         ("prompt", b" what is this", 0.4),
         ("send", b"\r", 3.0),
     ]
     out, marks = run_pi({}, steps)
 
     check("band caption renders", b"40x20" in out and b"214 B" in out, "#1 . 40x20 . 214 B")
-    check("band image uses kitty protocol", b"\x1b_G" in out)
+    check("band image uses kitty protocol", b"\x1b_G" in between(out, marks, "paste"))
     check("hover does nothing", b"r=12," not in out)
     check("overlay shows the close controls", b"close" in between(out, marks, "open_csiu_release"))
     check("kitty-protocol escape closes the overlay", b"close" not in between(out, marks, "esc_csiu"))
+    check(
+        "preview collapses after the delay",
+        b"\x1b_G" not in between(out, marks, "collapse1") and b"click to preview" in between(out, marks, "collapse1"),
+    )
+    check("clicking the chip expands the preview", b"\x1b_G" in between(out, marks, "expand1"))
     check("plain escape closes the overlay", b"close" not in between(out, marks, "esc_plain"))
     check("clicking the close control closes the overlay", b"close" not in between(out, marks, "close_click"))
     check("clicking outside closes the overlay", b"close" not in between(out, marks, "outside_click"))
+    check("typing does not repaint the preview", b"\x1b_G" not in between(out, marks, "type_char"))
     parts = read_session_parts(SESSION_ID)
     text = next((value for kind, value in (parts or []) if kind == "text"), "")
     check("prompt text has the clipboard path stripped", parts is not None and "pi-clipboard" not in (text or ""), repr(text)[:60])
     check("prompt carries the image part", any(kind == "image" and value == "image/png" for kind, value in (parts or [])), str(parts)[:80])
 
-    fallback, _ = run_pi({"PI_IMAGE_PROTOCOL": "none"}, [("paste", CLIPBOARD_IMAGE.encode(), 2.0)])
+    fallback, _ = run_pi({"PI_IMAGE_PROTOCOL": "none"}, [("paste", CLIPBOARD_IMAGE.encode(), 2.6)])
     check("no-graphics terminal keeps the caption", b"214 B" in fallback)
     check("no-graphics terminal renders a text fallback", b"[Image:" in fallback and b"\x1b_G" not in fallback)
 
