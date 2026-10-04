@@ -17,7 +17,6 @@ export const MAX_TILE_COLUMNS = 48;
 export const PREVIEW_VISIBLE_MS = 2000;
 export const CELL_ASPECT = 2;
 export const MIN_COLUMNS = 8;
-export const TILE_GAP_ROWS = 1;
 
 const CLIPBOARD_NAME_PATTERN = /^pi-clipboard-.*\.(png|jpg|jpeg|gif|webp)$/;
 const UNKNOWN_SIZE: Size = { width: 16, height: 10 };

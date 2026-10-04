@@ -8,7 +8,6 @@ import {
 	MIN_COLUMNS,
 	PREVIEW_LIMIT,
 	PREVIEW_VISIBLE_MS,
-	TILE_GAP_ROWS,
 	TILE_ROWS,
 	chipLabel,
 	findClipboardPaths,
@@ -31,7 +30,6 @@ test("constants match the preview contract", () => {
 	assert.equal(MAX_TILE_COLUMNS, 48);
 	assert.equal(CELL_ASPECT, 2);
 	assert.equal(MIN_COLUMNS, 8);
-	assert.equal(TILE_GAP_ROWS, 1);
 });
 
 test("findImagePaths keeps image tokens in first-appearance order", () => {

@@ -25,6 +25,7 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLIPBOARD_IMAGE = "/tmp/pi-clipboard-verify1.png"
+CLIPBOARD_IMAGE_2 = "/tmp/pi-clipboard-verify2.png"
 SESSION_ID = "verify-preview"
 COLUMNS = 120
 LINES = 40
@@ -77,8 +78,7 @@ def chip_click(buf):
     return f"\x1b[<35;8;{row}M".encode() + f"\x1b[<0;8;{row}M".encode() + f"\x1b[<0;8;{row}m".encode()
 
 
-def write_test_png(path):
-    width, height = 40, 20
+def write_test_png(path, width, height):
     raw = b"".join(b"\x00" + bytes([(x * 6) % 256 for x in range(width * 3)]) for _ in range(height))
 
     def chunk(tag, data):
@@ -166,8 +166,9 @@ def read_session_parts(session_id):
 
 
 def main():
-    size = write_test_png(CLIPBOARD_IMAGE)
-    print(f"fixture {CLIPBOARD_IMAGE} ({size} bytes)")
+    size = write_test_png(CLIPBOARD_IMAGE, 40, 20)
+    write_test_png(CLIPBOARD_IMAGE_2, 20, 40)
+    print(f"fixtures {CLIPBOARD_IMAGE} ({size} bytes), {CLIPBOARD_IMAGE_2}")
 
     move = f"\x1b[<35;{TILE_COLUMN};{TILE_ROW}M".encode()
     press = f"\x1b[<0;{TILE_COLUMN};{TILE_ROW}M".encode()
@@ -235,6 +236,34 @@ def main():
     fallback, _ = run_pi({"PI_IMAGE_PROTOCOL": "none"}, [("paste", CLIPBOARD_IMAGE.encode(), 2.6)])
     check("no-graphics terminal keeps the caption", b"214 B" in fallback)
     check("no-graphics terminal renders a text fallback", b"[Image:" in fallback and b"\x1b_G" not in fallback)
+
+    def label_click(buf):
+        row = row_of(buf, "20x40")
+        if row is None:
+            return b""
+        return f"\x1b[<35;2;{row}M".encode() + f"\x1b[<0;2;{row}M".encode() + f"\x1b[<0;2;{row}m".encode()
+
+    two_out, two_marks = run_pi(
+        {},
+        [
+            ("paste_one", CLIPBOARD_IMAGE.encode(), 0.8),
+            ("paste_two", b" " + CLIPBOARD_IMAGE_2.encode(), 1.2),
+            ("select_one", label_click, 0.4),
+            ("sample", b"", 1.0),
+        ],
+    )
+    pasted = between(two_out, two_marks, "paste_two")
+    check(
+        "selector lists every image",
+        pasted.count(b"verify1.png") >= 2 and pasted.count(b"verify2.png") >= 2,
+        "each label appears in the editor and in the selector",
+    )
+    check("newest image is active", b"20x40" in pasted, "portrait fixture is 20x40")
+    check(
+        "clicking a label switches the tile",
+        b"c=24,r=6" in between(two_out, two_marks, "select_one"),
+        "landscape fixture is 24x6 cells",
+    )
 
     print(f"\n{len(failures)} failure(s)")
     return 1 if failures else 0

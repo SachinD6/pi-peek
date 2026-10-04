@@ -33,7 +33,6 @@ export const TILE_ROWS = 6;
 export const MAX_TILE_COLUMNS = 48;
 export const CELL_ASPECT = 2;
 export const MIN_COLUMNS = 8;
-export const TILE_GAP_ROWS = 1;
 
 export function findImagePaths(text: string, limit = PREVIEW_LIMIT): string[];
 export function isClipboardImagePath(path: string, tmpDir: string): boolean;
@@ -71,7 +70,7 @@ export default function imagePreview(pi: ExtensionAPI): void;
 
 `BandState.text` is the single source of truth for what the band shows. `render(width)` samples `ctx.ui.getEditorText()`, returns the cached lines when the text is unchanged, and otherwise re-derives `images`. Deriving parses tokens with `findImagePaths`, drops non-files, loads each through a module-level `Map<string, LoadedImage>` keyed by `path + "\0" + mtimeMs + "\0" + size`, capped at 16 entries with oldest-first eviction. File reads use `readFileSync` and MIME sniffing uses `detectSupportedImageMimeTypeFromFile` from `@earendil-works/pi-coding-agent`. Only files whose sniffed MIME is `image/*` enter the state, so a missing or unreadable path produces no tile and never an error.
 
-Stacked rows, not columns. Each image renders as `Text` caption, `Image` lines, and a `Spacer`. A `click` calls `ctx.ui.custom` with `ImagePreviewOverlay`, which renders the image at 90% scale centered on a full-screen backdrop and calls `done(undefined)` on Esc, q, Enter, or a click outside the image rect. The full-screen backdrop is load-bearing: pi delivers mouse events to the overlay component only inside its own box, so the blank padding is what makes an outside click reach the component at all. Clicks on the image itself are consumed.
+A filmstrip, not a stack. The band renders one row of clickable labels, then the active image's tile at six rows, so any number of images costs seven rows. Clicking a label makes that image active and restarts the auto-hide timer. Clicking the tile calls `ctx.ui.custom` with `ImagePreviewOverlay`, which renders the image at 90% scale centered on a full-screen backdrop and calls `done(undefined)` on Esc, q, Enter, or a click outside the image rect. The full-screen backdrop is load-bearing: pi delivers mouse events to the overlay component only inside its own box, so the blank padding is what makes an outside click reach the component at all. Clicks on the image itself are consumed. A row of side-by-side images is not possible, because `compositeTuiLine` drops the second kitty sequence when two image lines meet horizontally; the probe is in the verification notes.
 
 Tokens live in a module-level `Map<number, string>` from number to path. `ImageTokenEditor` extends `CustomEditor` and overrides `insertTextAtCursor`. After pi's own paste handler inserts the temp path, the override backspaces exactly that path away, inserts `[Image #N]`, and leaves the cursor after the token, so the path never stays in the editor.
 
@@ -85,7 +84,7 @@ This design is the parent architect's own synthesis. The planned three-model par
 
 ## Tradeoffs accepted
 
-- We accept a vertical stack of at most three previews instead of the reference's horizontal row, in exchange for images that actually render.
+- We accept one visible thumbnail at a time instead of the reference's row of tiles, in exchange for a band that stays seven rows tall with ten images and actually renders. Side-by-side images are impossible in pi-tui, measured by a probe where two images in an `HStack` produced one kitty sequence.
 - We accept no border around previews, because a border needs cells beside the image and pi-tui cannot composite them.
 - We accept best-effort tokenization, so paths containing spaces are not previewed, in exchange for not writing a shell-grade parser.
 - We accept synchronous file reads on the render path, in exchange for no async state machine; the cache and the text guard bound this to once per text change per file.
@@ -124,6 +123,7 @@ Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the 
 | Chip click | clicking the chip re-renders the tile |
 | Typing | zero image uploads across a keystroke while the band is collapsed |
 | Transcript image | after send, the transcript segment contains a new image upload |
+| Multi-image filmstrip | two pasted images put both labels in the selector row, the newest is active, and clicking the other label renders that tile |
 | Attachment on send | session user message is `[('text', ' x what is this'), ('image', 'image/png')]` |
 | No-graphics fallback | caption plus `[Image: pi-clipboard-verify1.png [image/png] 40x20]`, zero kitty sequences |
 

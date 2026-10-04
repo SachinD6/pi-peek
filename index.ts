@@ -23,7 +23,6 @@ import {
 	removePaths,
 	rewriteInsertedImage,
 	sourcesKey,
-	TILE_GAP_ROWS,
 	TILE_ROWS,
 } from "./image-preview-lib.ts";
 import type { Cells, PreviewSource, Size } from "./image-preview-lib.ts";
@@ -315,6 +314,8 @@ class ImagePreviewBand implements Component {
 	private rendered: string[] | null = null;
 	private renderedWidth = -1;
 	private tileRanges: Array<{ top: number; bottom: number }> = [];
+	private selectorRanges: Array<{ start: number; end: number; index: number }> = [];
+	private activeIndex: number | null = null;
 	private generation = 0;
 
 	constructor(ctx: ExtensionContext, tui: TUI, theme: Theme) {
@@ -357,9 +358,19 @@ class ImagePreviewBand implements Component {
 			this.setMode("expanded", true);
 			return { handled: true };
 		}
-		const index = this.tileAt(event.y);
-		const image = index === null ? undefined : this.state.images[index];
-		if (image === undefined) {
+		if (event.y === 0) {
+			const hit = this.selectorRanges.find((range) => event.x >= range.start && event.x < range.end);
+			if (hit !== undefined) {
+				this.activeIndex = hit.index;
+				this.rendered = null;
+				this.startHideTimer();
+				this.tui.requestRender();
+			}
+			return { handled: true };
+		}
+		const image = this.state.images[this.activeIndex ?? this.state.images.length - 1];
+		const onTile = this.tileRanges.some((range) => event.y >= range.top && event.y < range.bottom);
+		if (image === undefined || !onTile) {
 			return undefined;
 		}
 		this.openOverlay(image);
@@ -388,8 +399,10 @@ class ImagePreviewBand implements Component {
 		const grew = images.length > this.state.images.length;
 		this.state = { key, images };
 		if (images.length === 0) {
+			this.activeIndex = null;
 			this.setMode("collapsed");
 		} else if (grew) {
+			this.activeIndex = images.length - 1;
 			this.setMode("expanded", true);
 		}
 		this.rendered = null;
@@ -435,28 +448,58 @@ class ImagePreviewBand implements Component {
 			lines.push(this.theme.fg("dim", truncateToWidth(chipLabel(this.state.images), width, "\u2026")));
 			ranges.push({ top: 0, bottom: 1 });
 			this.tileRanges = ranges;
+			this.selectorRanges = [];
 			return lines;
 		}
+		const active = Math.min(this.activeIndex ?? this.state.images.length - 1, this.state.images.length - 1);
+		this.activeIndex = active;
+		this.selectorRanges = this.buildSelector(lines, width, active);
+		const image = this.state.images[active];
+		if (image === undefined) {
+			this.tileRanges = ranges;
+			return lines;
+		}
+		const cells = fitCells(image.size, TILE_ROWS, MAX_TILE_COLUMNS);
+		const top = lines.length;
+		lines.push(...this.tileFor(image, cells).render(width));
+		ranges.push({ top, bottom: lines.length });
+		this.tileRanges = ranges;
+		return lines;
+	}
+
+	/** One row of clickable labels plus the active image's size, truncated to fit. */
+	private buildSelector(lines: string[], width: number, active: number): Array<{ start: number; end: number; index: number }> {
+		const ranges: Array<{ start: number; end: number; index: number }> = [];
+		let column = 0;
+		let text = "";
 		for (let index = 0; index < this.state.images.length; index += 1) {
 			const image = this.state.images[index];
 			if (image === undefined) {
 				continue;
 			}
-			const cells = fitCells(image.size, TILE_ROWS, MAX_TILE_COLUMNS);
-			const top = lines.length;
-			lines.push(this.theme.fg("muted", formatCaption(image.number ?? index + 1, image.size, image.bytes)));
-			lines.push(...this.tileFor(image, cells).render(width));
-			ranges.push({ top, bottom: lines.length });
-			for (let gap = 0; gap < TILE_GAP_ROWS; gap += 1) {
-				lines.push("");
+			const label = image.number === null ? image.name : imageToken(image.number);
+			const styled = index === active ? this.theme.fg("accent", label) : this.theme.fg("muted", label);
+			const separator = index === 0 ? "" : "  ";
+			const entryWidth = visibleWidth(separator) + visibleWidth(styled);
+			if (column + entryWidth > width) {
+				break;
+			}
+			text += separator + styled;
+			ranges.push({ start: column + visibleWidth(separator), end: column + entryWidth, index });
+			column += entryWidth;
+		}
+		const activeImage = this.state.images[active];
+		if (activeImage !== undefined) {
+			const styledMeta = this.theme.fg(
+				"dim",
+				` \u00b7 ${activeImage.size.width}x${activeImage.size.height} \u00b7 ${formatBytes(activeImage.bytes)}`,
+			);
+			if (column + visibleWidth(styledMeta) <= width) {
+				text += styledMeta;
 			}
 		}
-		// The band already sits on its own row above the editor, so a trailing spacer would read as a gap.
-		if (lines.length > 0 && lines[lines.length - 1] === "") {
-			lines.pop();
-		}
-		this.tileRanges = ranges;
-		return lines;
+		lines.push(text);
+		return ranges;
 	}
 
 	private tileFor(image: LoadedImage, cells: Cells): Image {
@@ -475,16 +518,6 @@ class ImagePreviewBand implements Component {
 			this.tiles.delete(oldest);
 		}
 		return tile;
-	}
-
-	private tileAt(y: number): number | null {
-		for (let index = 0; index < this.tileRanges.length; index += 1) {
-			const range = this.tileRanges[index];
-			if (range !== undefined && y >= range.top && y < range.bottom) {
-				return index;
-			}
-		}
-		return null;
 	}
 
 	private openOverlay(image: LoadedImage): void {
