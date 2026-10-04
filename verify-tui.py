@@ -31,7 +31,7 @@ LINES = 40
 # the six image rows follow, so row 32 is the middle of the first tile.
 TILE_ROW = 32
 TILE_COLUMN = 5
-CLOSE_COLUMN = 110
+CLOSE_COLUMN = 100
 
 failures = []
 
@@ -52,9 +52,8 @@ def fit_cells(width, height, max_rows, max_columns):
 
 
 def overlay_top_row():
-    """First row of the centered overlay, matching the component's own geometry."""
-    overlay_width = round(COLUMNS * 0.9)
-    inner_columns = max(8, round(overlay_width * 0.9))
+    """First content row of the full-screen overlay, matching the component's own geometry."""
+    inner_columns = max(8, round(COLUMNS * 0.9))
     image_rows = fit_cells(40, 20, math.floor(LINES * 0.9) - 2, inner_columns)[1]
     return (LINES - (image_rows + 2)) // 2 + 1
 
@@ -155,21 +154,29 @@ def main():
     release = f"\x1b[<0;{TILE_COLUMN};{TILE_ROW}m".encode()
     close_press = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}M".encode()
     close_release = f"\x1b[<0;{CLOSE_COLUMN};{overlay_top_row()}m".encode()
+    outside_press = b"\x1b[<0;2;2M"
+    outside_release = b"\x1b[<0;2;2m"
 
     steps = [
         ("paste", CLIPBOARD_IMAGE.encode(), 2.0),
-        ("move", move, 0.6),
-        ("move_again", move, 0.5),
+        ("move", move, 0.8),
         ("open_csiu", press, 0.2),
         ("open_csiu_release", release, 1.0),
         ("esc_csiu", b"\x1b[27u", 1.0),
-        ("open_plain", press, 0.2),
+        ("open_plain", move, 0.3),
+        ("open_plain_press", press, 0.2),
         ("open_plain_release", release, 1.0),
         ("esc_plain", b"\x1b", 1.0),
-        ("open_click", press, 0.2),
+        ("open_click", move, 0.3),
+        ("open_click_press", press, 0.2),
         ("open_click_release", release, 1.0),
         ("close_click_press", close_press, 0.2),
         ("close_click", close_release, 1.0),
+        ("open_outside", move, 0.3),
+        ("open_outside_press", press, 0.2),
+        ("open_outside_release", release, 1.0),
+        ("outside_press", outside_press, 0.2),
+        ("outside_click", outside_release, 1.0),
         ("prompt", b" what is this", 0.4),
         ("send", b"\r", 3.0),
     ]
@@ -177,12 +184,12 @@ def main():
 
     check("band caption renders", b"40x20" in out and b"214 B" in out, "#1 . 40x20 . 214 B")
     check("band image uses kitty protocol", b"\x1b_G" in out)
-    check("hover enlarges to 12 rows", b"r=12," in out)
-    check("hover collapses back to 6 rows", b"r=6," in out)
+    check("hover does nothing", b"r=12," not in out)
     check("overlay shows the close controls", b"close" in between(out, marks, "open_csiu_release"))
     check("kitty-protocol escape closes the overlay", b"close" not in between(out, marks, "esc_csiu"))
     check("plain escape closes the overlay", b"close" not in between(out, marks, "esc_plain"))
     check("clicking the close control closes the overlay", b"close" not in between(out, marks, "close_click"))
+    check("clicking outside closes the overlay", b"close" not in between(out, marks, "outside_click"))
     parts = read_session_parts(SESSION_ID)
     text = next((value for kind, value in (parts or []) if kind == "text"), "")
     check("prompt text has the clipboard path stripped", parts is not None and "pi-clipboard" not in (text or ""), repr(text)[:60])

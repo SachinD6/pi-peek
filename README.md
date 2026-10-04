@@ -3,10 +3,11 @@
 Pi extension that shows a thumbnail band above the editor when the prompt
 references an image, and attaches pasted images to the message.
 
-- Preview any existing image path in the editor (pasted, `@`-completed, dropped), last 3.
-- Pasted `/tmp/pi-clipboard-*` images become real message attachments, and their temp path is removed from the sent text.
-- Hover a thumbnail to grow it, click it for a full-screen overlay, Esc to close.
-- Terminals without kitty or iTerm2 graphics get a text caption instead.
+- Pasted images appear in the editor as `[Image #1]`, `[Image #2]`, and so on instead of a temp path.
+- A thumbnail band shows the referenced images, up to three, captioned with number, dimensions, and size.
+- Click a thumbnail for a full-screen view. Esc, q, Enter, the header close control, or a click outside the image dismisses it.
+- On send, pasted images become real message attachments and their tokens leave the text.
+- Typed, `@`-completed, and dropped image paths also preview, and terminals without kitty or iTerm2 graphics get a caption plus a text line.
 
 Design and constraints live in `DESIGN.md`.
 

@@ -13,7 +13,6 @@ export interface Cells {
 export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"] as const;
 export const PREVIEW_LIMIT = 3;
 export const TILE_ROWS = 6;
-export const HOVER_ROWS = 12;
 export const MAX_TILE_COLUMNS = 48;
 export const CELL_ASPECT = 2;
 export const MIN_COLUMNS = 8;
@@ -86,6 +85,23 @@ export function findClipboardPaths(text: string, tmpDir: string): string[] {
 	return found;
 }
 
+export function findImageTokens(text: string): number[] {
+	const found: number[] = [];
+	const seen = new Set<number>();
+	for (const match of text.matchAll(/\[Image #(\d+)\]/g)) {
+		const number = Number(match[1]);
+		if (!seen.has(number)) {
+			seen.add(number);
+			found.push(number);
+		}
+	}
+	return found;
+}
+
+export function imageToken(number: number): string {
+	return `[Image #${number}]`;
+}
+
 export function removePaths(text: string, paths: readonly string[]): string {
 	return text
 		.split("\n")
@@ -111,6 +127,32 @@ export function fitCells(size: Size | null, maxRows: number, maxColumns = MAX_TI
 		rows = Math.round((maxColumns * height) / (CELL_ASPECT * width));
 	}
 	return { columns: Math.max(MIN_COLUMNS, columns), rows: Math.max(1, rows) };
+}
+
+export const BACKSPACE = "\x7f";
+
+export interface TokenEditor {
+	getText(): string;
+	insertTextAtCursor(text: string): void;
+	handleInput(data: string): void;
+}
+
+/** Replace one freshly inserted clipboard-image path with its numbered token. */
+export function rewriteInsertedImage(
+	editor: TokenEditor,
+	inserted: string,
+	tmpDir: string,
+	remember: (path: string) => number,
+): boolean {
+	if (!isClipboardImagePath(inserted, tmpDir)) {
+		return false;
+	}
+	const token = imageToken(remember(inserted));
+	for (let index = 0; index < inserted.length; index += 1) {
+		editor.handleInput(BACKSPACE);
+	}
+	editor.insertTextAtCursor(token);
+	return true;
 }
 
 function formatBytes(bytes: number): string {

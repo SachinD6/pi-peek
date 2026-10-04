@@ -3,25 +3,28 @@ import type { Stats } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { detectSupportedImageMimeTypeFromFile } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, detectSupportedImageMimeTypeFromFile } from "@earendil-works/pi-coding-agent";
 import type { Component, TuiMouseEvent, TuiMouseEventResult, TUI } from "@earendil-works/pi-tui";
 import { Image, Key, getImageDimensions, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
+	PREVIEW_LIMIT,
 	findClipboardPaths,
 	findImagePaths,
+	findImageTokens,
 	fitCells,
 	formatCaption,
-	HOVER_ROWS,
+	imageToken,
+	isClipboardImagePath,
 	MAX_TILE_COLUMNS,
 	MIN_COLUMNS,
 	removePaths,
+	rewriteInsertedImage,
 	TILE_GAP_ROWS,
 	TILE_ROWS,
 } from "./image-preview-lib.ts";
 import type { Cells, Size } from "./image-preview-lib.ts";
 
 const WIDGET_KEY = "image-preview";
-const HOVER_COLLAPSE_MS = 500;
 const LOADED_CACHE_LIMIT = 16;
 const TILE_CACHE_LIMIT = 16;
 const OVERLAY_SCALE = 0.9;
@@ -35,6 +38,7 @@ interface LoadedImage {
 	bytes: number;
 	base64: string;
 	mtimeMs: number;
+	number: number | null;
 }
 
 interface BandState {
@@ -93,29 +97,19 @@ async function loadImage(path: string): Promise<LoadedImage | null> {
 			bytes: stats.size,
 			base64,
 			mtimeMs: stats.mtimeMs,
+			number: null,
 		});
 	} catch {
 		return null;
 	}
 }
 
-async function loadImages(text: string, cwd: string): Promise<LoadedImage[]> {
+async function loadSources(sources: readonly Source[], cwd: string): Promise<LoadedImage[]> {
 	const images: LoadedImage[] = [];
-	for (const token of findImagePaths(text)) {
-		const image = await loadImage(isAbsolute(token) ? token : resolve(cwd, token));
+	for (const source of sources) {
+		const image = await loadImage(isAbsolute(source.path) ? source.path : resolve(cwd, source.path));
 		if (image !== null) {
-			images.push(image);
-		}
-	}
-	return images;
-}
-
-async function loadClipboardImages(tokens: readonly string[], dir: string): Promise<LoadedImage[]> {
-	const images: LoadedImage[] = [];
-	for (const token of tokens) {
-		const image = await loadImage(isAbsolute(token) ? token : resolve(dir, token));
-		if (image !== null) {
-			images.push(image);
+			images.push({ ...image, number: source.number });
 		}
 	}
 	return images;
@@ -131,6 +125,59 @@ function createImage(theme: Theme, image: LoadedImage, cells: Cells): Image {
 	);
 }
 
+const clipboardImages = new Map<number, string>();
+let nextImageNumber = 1;
+
+function rememberClipboardImage(path: string): number {
+	const number = nextImageNumber;
+	nextImageNumber += 1;
+	clipboardImages.set(number, path);
+	return number;
+}
+
+function resetClipboardImages(): void {
+	clipboardImages.clear();
+	nextImageNumber = 1;
+}
+
+interface Source {
+	path: string;
+	number: number | null;
+}
+
+/** Numbered tokens first, in text order, then any other image paths in the text. */
+function previewSources(text: string): Source[] {
+	const sources: Source[] = [];
+	for (const number of findImageTokens(text)) {
+		const path = clipboardImages.get(number);
+		if (path !== undefined) {
+			sources.push({ path, number });
+		}
+	}
+	for (const path of findImagePaths(text)) {
+		if (!sources.some((source) => source.path === path)) {
+			sources.push({ path, number: null });
+		}
+	}
+	return sources.slice(0, PREVIEW_LIMIT);
+}
+
+/** Replaces the path pi just pasted with `[Image #N]`, keeping the editor's cursor in place. */
+class ImageTokenEditor extends CustomEditor {
+	insertTextAtCursor(text: string): void {
+		const wasEmpty = this.getText().trim() === "";
+		super.insertTextAtCursor(text);
+		if (wasEmpty && isClipboardImagePath(text, tmpdir())) {
+			resetClipboardImages();
+		}
+		try {
+			rewriteInsertedImage(this, text, tmpdir(), rememberClipboardImage);
+		} catch {
+			// The path stays in the editor and still previews and attaches on send.
+		}
+	}
+}
+
 class ImagePreviewOverlay implements Component {
 	private readonly tui: TUI;
 	private readonly theme: Theme;
@@ -138,6 +185,9 @@ class ImagePreviewOverlay implements Component {
 	private readonly done: (result: undefined) => void;
 	private lines: string[] | null = null;
 	private linesWidth = -1;
+	private imageTop = 0;
+	private imageBottom = 0;
+	private imageColumns = 0;
 
 	constructor(tui: TUI, theme: Theme, image: LoadedImage, done: (result: undefined) => void) {
 		this.tui = tui;
@@ -154,12 +204,25 @@ class ImagePreviewOverlay implements Component {
 		const columns = Math.max(MIN_COLUMNS, Math.round(width * OVERLAY_SCALE));
 		const cells = fitCells(this.image.size, rows, columns);
 		const close = this.theme.fg("muted", "\u2715 close");
-		const name = truncateToWidth(this.image.name, Math.max(1, width - visibleWidth(close) - 2), "\u2026");
-		const gap = Math.max(1, width - visibleWidth(name) - visibleWidth(close));
-		this.lines = [
+		const name = truncateToWidth(this.image.name, Math.max(1, cells.columns - visibleWidth(close) - 2), "\u2026");
+		const gap = Math.max(1, cells.columns - visibleWidth(name) - visibleWidth(close));
+		const imageLines = createImage(this.theme, this.image, cells).render(width);
+		const content = [
 			`${this.theme.fg("accent", name)}${" ".repeat(gap)}${close}`,
-			...createImage(this.theme, this.image, cells).render(width),
+			...imageLines,
 			this.theme.fg("dim", "Esc \u00b7 q \u00b7 \u2715 close"),
+		];
+		// Fill the screen so a click on the margins still reaches this component.
+		const terminalRows = Math.max(1, this.tui.terminal.rows);
+		const top = Math.max(0, Math.floor((terminalRows - content.length) / 2));
+		this.imageTop = top + 1;
+		this.imageBottom = this.imageTop + imageLines.length;
+		this.imageColumns = cells.columns;
+		const bottom = Math.max(0, terminalRows - top - content.length);
+		this.lines = [
+			...Array.from({ length: top }, () => ""),
+			...content,
+			...Array.from({ length: bottom }, () => ""),
 		];
 		this.linesWidth = width;
 		return this.lines;
@@ -172,17 +235,17 @@ class ImagePreviewOverlay implements Component {
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		// The header row holds the close control, and its whole row is a hit target.
-		if (event.type === "click" && event.y === 0) {
+		if (event.type !== "press" && event.type !== "click" && event.type !== "release") {
+			return undefined;
+		}
+		const onImage =
+			event.y >= this.imageTop && event.y < this.imageBottom && event.x < this.imageColumns;
+		if (!onImage && (event.type === "press" || event.type === "click")) {
 			this.done(undefined);
-			return { handled: true };
 		}
 		// Consume pointer events so a click cannot fall through to transcript selection and
 		// replace whatever image the user has on the system clipboard.
-		if (event.type === "press" || event.type === "click" || event.type === "release") {
-			return { handled: true };
-		}
-		return undefined;
+		return { handled: true };
 	}
 
 	invalidate(): void {
@@ -198,10 +261,7 @@ class ImagePreviewBand implements Component {
 	private tiles = new Map<string, Image>();
 	private rendered: string[] | null = null;
 	private renderedWidth = -1;
-	private renderedHovered: number | null = null;
 	private tileRanges: Array<{ top: number; bottom: number }> = [];
-	private hovered: number | null = null;
-	private hoverTimer: ReturnType<typeof setTimeout> | undefined;
 	private generation = 0;
 
 	constructor(ctx: ExtensionContext, tui: TUI, theme: Theme) {
@@ -215,31 +275,18 @@ class ImagePreviewBand implements Component {
 		if (text !== this.state.text) {
 			this.generation += 1;
 			this.state = { text, images: [] };
-			this.hovered = null;
-			this.stopHoverTimer();
 			this.rendered = null;
 			void this.derive(text, this.generation);
 		}
-		if (this.rendered !== null && this.renderedWidth === width && this.renderedHovered === this.hovered) {
+		if (this.rendered !== null && this.renderedWidth === width) {
 			return this.rendered;
 		}
 		this.rendered = this.buildLines(width);
 		this.renderedWidth = width;
-		this.renderedHovered = this.hovered;
 		return this.rendered;
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (event.type === "move") {
-			const index = this.tileAt(event.y);
-			const changed = index !== this.hovered;
-			this.hovered = index;
-			this.restartHoverTimer();
-			if (changed) {
-				this.tui.requestRender();
-			}
-			return { handled: true };
-		}
 		if (event.type === "click") {
 			const index = this.tileAt(event.y);
 			const image = index === null ? undefined : this.state.images[index];
@@ -257,14 +304,10 @@ class ImagePreviewBand implements Component {
 		this.tiles.clear();
 	}
 
-	dispose(): void {
-		this.stopHoverTimer();
-	}
-
 	private async derive(text: string, generation: number): Promise<void> {
 		let images: LoadedImage[] = [];
 		try {
-			images = await loadImages(text, this.ctx.cwd);
+			images = await loadSources(previewSources(text), this.ctx.cwd);
 		} catch {
 			images = [];
 		}
@@ -284,9 +327,9 @@ class ImagePreviewBand implements Component {
 			if (image === undefined) {
 				continue;
 			}
-			const cells = fitCells(image.size, this.hovered === index ? HOVER_ROWS : TILE_ROWS, MAX_TILE_COLUMNS);
+			const cells = fitCells(image.size, TILE_ROWS, MAX_TILE_COLUMNS);
 			const top = lines.length;
-			lines.push(this.theme.fg("muted", formatCaption(index + 1, image.size, image.bytes)));
+			lines.push(this.theme.fg("muted", formatCaption(image.number ?? index + 1, image.size, image.bytes)));
 			lines.push(...this.tileFor(image, cells).render(width));
 			ranges.push({ top, bottom: lines.length });
 			for (let gap = 0; gap < TILE_GAP_ROWS; gap += 1) {
@@ -329,27 +372,11 @@ class ImagePreviewBand implements Component {
 		return null;
 	}
 
-	private restartHoverTimer(): void {
-		this.stopHoverTimer();
-		this.hoverTimer = setTimeout(() => {
-			this.hoverTimer = undefined;
-			this.hovered = null;
-			this.tui.requestRender();
-		}, HOVER_COLLAPSE_MS);
-	}
-
-	private stopHoverTimer(): void {
-		if (this.hoverTimer !== undefined) {
-			clearTimeout(this.hoverTimer);
-			this.hoverTimer = undefined;
-		}
-	}
-
 	private openOverlay(image: LoadedImage): void {
 		void this.ctx.ui
 			.custom<undefined>(
 				(tui, theme, _keybindings, done) => new ImagePreviewOverlay(tui, theme, image, done),
-				{ overlay: true, overlayOptions: { width: "90%", maxHeight: "90%" } },
+				{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "center" } },
 			)
 			.catch(() => undefined);
 	}
@@ -360,6 +387,8 @@ export default function imagePreview(pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") {
 			return;
 		}
+		resetClipboardImages();
+		ctx.ui.setEditorComponent((tui, theme, keybindings) => new ImageTokenEditor(tui, theme, keybindings));
 		ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => new ImagePreviewBand(ctx, tui, theme), {
 			placement: "aboveEditor",
 		});
@@ -374,20 +403,34 @@ export default function imagePreview(pi: ExtensionAPI): void {
 
 	pi.on("input", async (event) => {
 		const dir = tmpdir();
-		const tokens = findClipboardPaths(event.text, dir);
-		if (tokens.length === 0) {
+		const pending: Array<{ path: string; needle: string }> = [];
+		for (const number of findImageTokens(event.text)) {
+			const path = clipboardImages.get(number);
+			if (path !== undefined) {
+				pending.push({ path, needle: imageToken(number) });
+			}
+		}
+		for (const path of findClipboardPaths(event.text, dir)) {
+			pending.push({ path, needle: path });
+		}
+		if (pending.length === 0) {
 			return { action: "continue" };
 		}
-		const loaded = await loadClipboardImages(tokens, dir);
+		const loaded: LoadedImage[] = [];
+		const needles: string[] = [];
+		for (const item of pending) {
+			const image = await loadImage(isAbsolute(item.path) ? item.path : resolve(dir, item.path));
+			if (image !== null) {
+				loaded.push(image);
+				needles.push(item.needle);
+			}
+		}
 		if (loaded.length === 0) {
 			return { action: "continue" };
 		}
 		return {
 			action: "transform",
-			text: removePaths(
-				event.text,
-				loaded.map((image) => image.path),
-			),
+			text: removePaths(event.text, needles),
 			images: [
 				...(event.images ?? []),
 				...loaded.map((image) => ({ type: "image" as const, data: image.base64, mimeType: image.mimeType })),

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	BACKSPACE,
 	CELL_ASPECT,
-	HOVER_ROWS,
 	IMAGE_EXTENSIONS,
 	MAX_TILE_COLUMNS,
 	MIN_COLUMNS,
@@ -11,17 +11,20 @@ import {
 	TILE_ROWS,
 	findClipboardPaths,
 	findImagePaths,
+	findImageTokens,
 	fitCells,
 	formatCaption,
+	imageToken,
 	isClipboardImagePath,
 	removePaths,
+	rewriteInsertedImage,
+	type TokenEditor,
 } from "./image-preview-lib.ts";
 
 test("constants match the preview contract", () => {
 	assert.deepEqual(IMAGE_EXTENSIONS, ["png", "jpg", "jpeg", "gif", "webp"]);
 	assert.equal(PREVIEW_LIMIT, 3);
 	assert.equal(TILE_ROWS, 6);
-	assert.equal(HOVER_ROWS, 12);
 	assert.equal(MAX_TILE_COLUMNS, 48);
 	assert.equal(CELL_ASPECT, 2);
 	assert.equal(MIN_COLUMNS, 8);
@@ -108,4 +111,56 @@ test("formatCaption prints index, pixel size and byte size", () => {
 	assert.equal(formatCaption(2, null, 512), "#2 \u00b7 ?x? \u00b7 512 B");
 	assert.equal(formatCaption(3, { width: 1, height: 2 }, 1048576), "#3 \u00b7 1x2 \u00b7 1.0 MB");
 	assert.equal(formatCaption(4, { width: 10, height: 10 }, 2048), "#4 \u00b7 10x10 \u00b7 2.0 KB");
+});
+
+test("imageToken and findImageTokens round-trip the numbered markers", () => {
+	assert.equal(imageToken(1), "[Image #1]");
+	assert.equal(imageToken(12), "[Image #12]");
+	assert.deepEqual(findImageTokens("see [Image #2] and [Image #1] and [Image #2] again"), [2, 1]);
+	assert.deepEqual(findImageTokens("no markers here"), []);
+	assert.deepEqual(findImageTokens("[Image #]"), []);
+});
+
+class CursorEditor implements TokenEditor {
+	text: string;
+	cursor: number;
+
+	constructor(text = "", cursor = text.length) {
+		this.text = text;
+		this.cursor = cursor;
+	}
+
+	getText(): string {
+		return this.text;
+	}
+
+	insertTextAtCursor(text: string): void {
+		this.text = this.text.slice(0, this.cursor) + text + this.text.slice(this.cursor);
+		this.cursor += text.length;
+	}
+
+	handleInput(data: string): void {
+		if (data === BACKSPACE && this.cursor > 0) {
+			this.text = this.text.slice(0, this.cursor - 1) + this.text.slice(this.cursor);
+			this.cursor -= 1;
+		}
+	}
+}
+
+test("rewriteInsertedImage swaps the pasted path for a token at the cursor", () => {
+	const editor = new CursorEditor("look  please", "look ".length);
+	editor.insertTextAtCursor("/tmp/pi-clipboard-abc.png");
+	assert.equal(
+		rewriteInsertedImage(editor, "/tmp/pi-clipboard-abc.png", "/tmp", () => 1),
+		true,
+	);
+	assert.equal(editor.getText(), "look [Image #1] please");
+	assert.equal(editor.cursor, "look [Image #1]".length);
+});
+
+test("rewriteInsertedImage leaves other insertions alone", () => {
+	const editor = new CursorEditor("notes: ");
+	editor.insertTextAtCursor("hello.png");
+	assert.equal(rewriteInsertedImage(editor, "hello.png", "/tmp", () => 1), false);
+	assert.equal(editor.getText(), "notes: hello.png");
 });
