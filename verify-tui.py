@@ -177,31 +177,33 @@ def main():
 
     steps = [
         ("paste", CLIPBOARD_IMAGE.encode(), 1.2),
-        ("move", move, 0.3),
-        ("open_csiu", press, 0.2),
-        ("open_csiu_release", release, 1.0),
-        ("esc_csiu", b"\x1b[27u", 1.0),
         ("collapse1", b"", 2.4),
         ("expand1", chip_click, CHIP_PAUSE),
         ("move1", move, 0.3),
-        ("open_plain", press, 0.2),
-        ("open_plain_release", release, 1.0),
-        ("esc_plain", b"\x1b", 1.0),
+        ("open_csiu", press, 0.2),
+        ("open_csiu_release", release, 1.0),
+        ("esc_csiu", b"\x1b[27u", 1.0),
         ("collapse2", b"", 2.4),
         ("expand2", chip_click, CHIP_PAUSE),
         ("move2", move, 0.3),
+        ("open_plain", press, 0.2),
+        ("open_plain_release", release, 1.0),
+        ("esc_plain", b"\x1b", 1.0),
+        ("collapse3", b"", 2.4),
+        ("expand3", chip_click, CHIP_PAUSE),
+        ("move3", move, 0.3),
         ("open_click", press, 0.2),
         ("open_click_release", release, 1.0),
         ("close_click_press", close_press, 0.2),
         ("close_click", close_release, 1.0),
-        ("collapse3", b"", 2.4),
-        ("expand3", chip_click, CHIP_PAUSE),
-        ("move3", move, 0.3),
+        ("collapse4", b"", 2.4),
+        ("expand4", chip_click, CHIP_PAUSE),
+        ("move4", move, 0.3),
         ("open_outside", press, 0.2),
         ("open_outside_release", release, 1.0),
         ("outside_press", b"\x1b[<0;2;2M", 0.2),
         ("outside_click", b"\x1b[<0;2;2m", 1.0),
-        ("collapse4", b"", 2.4),
+        ("collapse5", b"", 2.4),
         ("type_char", b" x", 1.0),
         ("prompt", b" what is this", 0.4),
         ("send", b"\r", 3.0),
@@ -213,15 +215,18 @@ def main():
     check("hover does nothing", b"r=12," not in out)
     check("overlay shows the close controls", b"close" in between(out, marks, "open_csiu_release"))
     check("kitty-protocol escape closes the overlay", b"close" not in between(out, marks, "esc_csiu"))
+    collapse = between(out, marks, "collapse1")
     check(
         "preview collapses after the delay",
-        b"\x1b_G" not in between(out, marks, "collapse1") and b"click to preview" in between(out, marks, "collapse1"),
+        b"click to preview" in collapse and b"f=100" not in collapse,
+        f"uploads={collapse.count(b'f=100')} chip={b'click to preview' in collapse}",
     )
     check("clicking the chip expands the preview", b"\x1b_G" in between(out, marks, "expand1"))
     check("plain escape closes the overlay", b"close" not in between(out, marks, "esc_plain"))
     check("clicking the close control closes the overlay", b"close" not in between(out, marks, "close_click"))
     check("clicking outside closes the overlay", b"close" not in between(out, marks, "outside_click"))
     check("typing does not repaint the preview", b"\x1b_G" not in between(out, marks, "type_char"))
+    check("sent image appears in the transcript", b"\x1b_G" in between(out, marks, "send"))
     parts = read_session_parts(SESSION_ID)
     text = next((value for kind, value in (parts or []) if kind == "text"), "")
     check("prompt text has the clipboard path stripped", parts is not None and "pi-clipboard" not in (text or ""), repr(text)[:60])

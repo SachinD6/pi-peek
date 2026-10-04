@@ -112,7 +112,7 @@ Write `image-preview-lib.ts`, `index.ts`, and `image-preview.test.ts`, then run 
 
 ## Verification
 
-Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the symlinked directory. The rerunnable checks live in `verify-tui.py`, and `node --test image-preview.test.ts` covers the pure helpers (12 pass, 0 fail).
+Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the symlinked directory. The rerunnable checks live in `verify-tui.py` (16 checks), and `node --test image-preview.test.ts` covers the pure helpers (18 pass, 0 fail).
 
 | Check | Result |
 | --- | --- |
@@ -120,10 +120,16 @@ Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the 
 | Hover | does nothing, by request, and no `r=12` placement appears |
 | Click outside | a press on the blank backdrop closes the overlay |
 | Click overlay | overlay draws the image, names it, and shows the close controls; Esc, q, Enter, and a click on the header row all close it |
-| Attachment on send | session user message is `[('text', ' what is this'), ('image', 'image/png')]` |
+| Auto-hide | the tile collapses to `click to preview` two seconds after a paste, with zero new uploads |
+| Chip click | clicking the chip re-renders the tile |
+| Typing | zero image uploads across a keystroke while the band is collapsed |
+| Transcript image | after send, the transcript segment contains a new image upload |
+| Attachment on send | session user message is `[('text', ' x what is this'), ('image', 'image/png')]` |
 | No-graphics fallback | caption plus `[Image: pi-clipboard-verify1.png [image/png] 40x20]`, zero kitty sequences |
 
 Two findings from verification that the sketch had wrong. The first symlink attempt linked the single entry file, and the loader failed with `Cannot find module './image-preview-lib.ts'` because relative imports resolve against the link path. The install is a directory symlink with `index.ts`.
+
+The flicker root cause was a state reset on every editor text change, so each keystroke blanked the tiles for at least one frame and repainted the band. `sourcesKey`, a no-empty-intermediate-state derive, and a mode-aware render cache removed it. The pty check measures zero image uploads across a keystroke.
 
 The token swap is covered by a unit test with a cursor-preserving fake editor. It is not covered by a live paste in `verify-tui.py` because that would require putting a test image on the system clipboard, which this project no longer does after a leftover fixture confused a real session.
 

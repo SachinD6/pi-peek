@@ -5,13 +5,16 @@ import { basename, isAbsolute, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CustomEditor, detectSupportedImageMimeTypeFromFile } from "@earendil-works/pi-coding-agent";
 import type { Component, TuiMouseEvent, TuiMouseEventResult, TUI } from "@earendil-works/pi-tui";
-import { Image, Key, getImageDimensions, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Image, Key, VStack, Text, getImageDimensions, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	PREVIEW_LIMIT,
+	PREVIEW_VISIBLE_MS,
+	chipLabel,
 	findClipboardPaths,
 	findImagePaths,
 	findImageTokens,
 	fitCells,
+	formatBytes,
 	formatCaption,
 	imageToken,
 	isClipboardImagePath,
@@ -19,14 +22,17 @@ import {
 	MIN_COLUMNS,
 	removePaths,
 	rewriteInsertedImage,
+	sourcesKey,
 	TILE_GAP_ROWS,
 	TILE_ROWS,
 } from "./image-preview-lib.ts";
-import type { Cells, Size } from "./image-preview-lib.ts";
+import type { Cells, PreviewSource, Size } from "./image-preview-lib.ts";
 
 const WIDGET_KEY = "image-preview";
 const LOADED_CACHE_LIMIT = 16;
 const TILE_CACHE_LIMIT = 16;
+const TRANSCRIPT_ROWS = 8;
+const TRANSCRIPT_COLUMNS = 72;
 const OVERLAY_SCALE = 0.9;
 const OVERLAY_CHROME_ROWS = 2;
 
@@ -41,8 +47,10 @@ interface LoadedImage {
 	number: number | null;
 }
 
+type PreviewMode = "expanded" | "collapsed";
+
 interface BandState {
-	text: string;
+	key: string;
 	images: LoadedImage[];
 }
 
@@ -140,14 +148,9 @@ function resetClipboardImages(): void {
 	nextImageNumber = 1;
 }
 
-interface Source {
-	path: string;
-	number: number | null;
-}
-
 /** Numbered tokens first, in text order, then any other image paths in the text. */
-function previewSources(text: string): Source[] {
-	const sources: Source[] = [];
+function previewSources(text: string): PreviewSource[] {
+	const sources: PreviewSource[] = [];
 	for (const number of findImageTokens(text)) {
 		const path = clipboardImages.get(number);
 		if (path !== undefined) {
@@ -162,8 +165,53 @@ function previewSources(text: string): Source[] {
 	return sources.slice(0, PREVIEW_LIMIT);
 }
 
-/** Replaces the path pi just pasted with `[Image #N]`, keeping the editor's cursor in place. */
-class ImageTokenEditor extends CustomEditor {
+const pendingTranscriptImages: TranscriptImage[][] = [];
+const transcriptImageCache = new Map<string, { base64: string; widthPx: number; heightPx: number } | null>();
+
+interface TranscriptImage {
+	path: string;
+	name: string;
+	mimeType: string;
+	widthPx: number;
+	heightPx: number;
+	bytes: number;
+	number: number | null;
+}
+
+interface TranscriptEntry {
+	images: TranscriptImage[];
+}
+
+function readTranscriptImage(path: string, mimeType: string) {
+	let stats: Stats;
+	try {
+		stats = statSync(path);
+	} catch {
+		return null;
+	}
+	if (!stats.isFile()) {
+		return null;
+	}
+	const key = `${path}\0${stats.mtimeMs}\0${stats.size}`;
+	const cached = transcriptImageCache.get(key);
+	if (cached !== undefined) {
+		return cached;
+	}
+	try {
+		const base64 = readFileSync(path).toString("base64");
+		const dimensions = getImageDimensions(base64, mimeType);
+		if (dimensions === null) {
+			return null;
+		}
+		const value = { base64, widthPx: dimensions.widthPx, heightPx: dimensions.heightPx };
+		transcriptImageCache.set(key, value);
+		return value;
+	} catch {
+		return null;
+	}
+}
+
+/** Replaces the path pi just pasted with `[Image #N]`, keeping the editor's cursor in place. */class ImageTokenEditor extends CustomEditor {
 	insertTextAtCursor(text: string): void {
 		const wasEmpty = this.getText().trim() === "";
 		super.insertTextAtCursor(text);
@@ -257,7 +305,12 @@ class ImagePreviewBand implements Component {
 	private readonly ctx: ExtensionContext;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
-	private state: BandState = { text: "", images: [] };
+	private state: BandState = { key: "", images: [] };
+	private mode: PreviewMode = "collapsed";
+	private requestedKey = "";
+	private renderedKey = "";
+	private renderedMode: PreviewMode | null = null;
+	private hideTimer: ReturnType<typeof setTimeout> | undefined;
 	private tiles = new Map<string, Image>();
 	private rendered: string[] | null = null;
 	private renderedWidth = -1;
@@ -271,32 +324,46 @@ class ImagePreviewBand implements Component {
 	}
 
 	render(width: number): string[] {
-		const text = this.ctx.ui.getEditorText();
-		if (text !== this.state.text) {
+		const sources = previewSources(this.ctx.ui.getEditorText());
+		const key = sourcesKey(sources);
+		if (key !== this.requestedKey) {
+			this.requestedKey = key;
 			this.generation += 1;
-			this.state = { text, images: [] };
-			this.rendered = null;
-			void this.derive(text, this.generation);
+			void this.derive(key, sources, this.generation);
 		}
-		if (this.rendered !== null && this.renderedWidth === width) {
+		if (
+			this.rendered !== null &&
+			this.renderedWidth === width &&
+			this.renderedKey === this.state.key &&
+			this.renderedMode === this.mode
+		) {
 			return this.rendered;
 		}
 		this.rendered = this.buildLines(width);
 		this.renderedWidth = width;
+		this.renderedKey = this.state.key;
+		this.renderedMode = this.mode;
 		return this.rendered;
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (event.type === "click") {
-			const index = this.tileAt(event.y);
-			const image = index === null ? undefined : this.state.images[index];
-			if (image === undefined) {
+		if (event.type !== "click") {
+			return undefined;
+		}
+		if (this.mode === "collapsed") {
+			if (this.state.images.length === 0) {
 				return undefined;
 			}
-			this.openOverlay(image);
+			this.setMode("expanded", true);
 			return { handled: true };
 		}
-		return undefined;
+		const index = this.tileAt(event.y);
+		const image = index === null ? undefined : this.state.images[index];
+		if (image === undefined) {
+			return undefined;
+		}
+		this.openOverlay(image);
+		return { handled: true };
 	}
 
 	invalidate(): void {
@@ -304,24 +371,72 @@ class ImagePreviewBand implements Component {
 		this.tiles.clear();
 	}
 
-	private async derive(text: string, generation: number): Promise<void> {
+	dispose(): void {
+		this.stopHideTimer();
+	}
+
+	private async derive(key: string, sources: readonly PreviewSource[], generation: number): Promise<void> {
 		let images: LoadedImage[] = [];
 		try {
-			images = await loadSources(previewSources(text), this.ctx.cwd);
+			images = await loadSources(sources, this.ctx.cwd);
 		} catch {
 			images = [];
 		}
 		if (generation !== this.generation) {
 			return;
 		}
-		this.state = { text, images };
+		const grew = images.length > this.state.images.length;
+		this.state = { key, images };
+		if (images.length === 0) {
+			this.setMode("collapsed");
+		} else if (grew) {
+			this.setMode("expanded", true);
+		}
 		this.rendered = null;
 		this.tui.requestRender();
+	}
+
+	private setMode(mode: PreviewMode, restartTimer = false): void {
+		this.mode = mode;
+		if (mode === "expanded" && restartTimer) {
+			this.startHideTimer();
+		}
+		if (mode === "collapsed") {
+			this.stopHideTimer();
+		}
+		this.rendered = null;
+	}
+
+	private startHideTimer(): void {
+		this.stopHideTimer();
+		this.hideTimer = setTimeout(() => {
+			this.hideTimer = undefined;
+			this.mode = "collapsed";
+			this.rendered = null;
+			this.tui.requestRender();
+		}, PREVIEW_VISIBLE_MS);
+	}
+
+	private stopHideTimer(): void {
+		if (this.hideTimer !== undefined) {
+			clearTimeout(this.hideTimer);
+			this.hideTimer = undefined;
+		}
 	}
 
 	private buildLines(width: number): string[] {
 		const lines: string[] = [];
 		const ranges: Array<{ top: number; bottom: number }> = [];
+		if (this.state.images.length === 0) {
+			this.tileRanges = ranges;
+			return lines;
+		}
+		if (this.mode === "collapsed") {
+			lines.push(this.theme.fg("dim", truncateToWidth(chipLabel(this.state.images), width, "\u2026")));
+			ranges.push({ top: 0, bottom: 1 });
+			this.tileRanges = ranges;
+			return lines;
+		}
 		for (let index = 0; index < this.state.images.length; index += 1) {
 			const image = this.state.images[index];
 			if (image === undefined) {
@@ -401,33 +516,83 @@ export default function imagePreview(pi: ExtensionAPI): void {
 		ctx.ui.setWidget(WIDGET_KEY, undefined);
 	});
 
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "user") {
+			return;
+		}
+		const images = pendingTranscriptImages.shift();
+		if (images === undefined || images.length === 0) {
+			return;
+		}
+		pi.appendEntry("image-preview", { images });
+	});
+
+	pi.registerEntryRenderer<TranscriptEntry>("image-preview", (entry, _options, theme) => {
+		const images = entry.data?.images ?? [];
+		if (images.length === 0) {
+			return undefined;
+		}
+		const box = new VStack([], { gap: 1 });
+		for (const image of images) {
+			const label = `${image.number === null ? "" : `${imageToken(image.number)} `}${image.name} \u00b7 ${image.widthPx}x${image.heightPx} \u00b7 ${formatBytes(image.bytes)}`;
+			box.addChild(new Text(theme.fg("muted", label), 0, 0));
+			const loaded = readTranscriptImage(image.path, image.mimeType);
+			if (loaded === null) {
+				box.addChild(new Text(theme.fg("dim", "(temp file removed)"), 0, 0));
+				continue;
+			}
+			const cells = fitCells({ width: loaded.widthPx, height: loaded.heightPx }, TRANSCRIPT_ROWS, TRANSCRIPT_COLUMNS);
+			box.addChild(
+				new Image(
+					loaded.base64,
+					image.mimeType,
+					{ fallbackColor: (text: string) => theme.fg("muted", text) },
+					{ maxWidthCells: cells.columns, maxHeightCells: cells.rows, filename: image.name },
+					{ widthPx: loaded.widthPx, heightPx: loaded.heightPx },
+				),
+			);
+		}
+		return box;
+	});
+
 	pi.on("input", async (event) => {
 		const dir = tmpdir();
-		const pending: Array<{ path: string; needle: string }> = [];
+		const pending: Array<{ path: string; needle: string; number: number | null }> = [];
 		for (const number of findImageTokens(event.text)) {
 			const path = clipboardImages.get(number);
 			if (path !== undefined) {
-				pending.push({ path, needle: imageToken(number) });
+				pending.push({ path, needle: imageToken(number), number });
 			}
 		}
 		for (const path of findClipboardPaths(event.text, dir)) {
-			pending.push({ path, needle: path });
+			pending.push({ path, needle: path, number: null });
 		}
 		if (pending.length === 0) {
 			return { action: "continue" };
 		}
 		const loaded: LoadedImage[] = [];
 		const needles: string[] = [];
+		const transcriptImages: TranscriptImage[] = [];
 		for (const item of pending) {
 			const image = await loadImage(isAbsolute(item.path) ? item.path : resolve(dir, item.path));
 			if (image !== null) {
 				loaded.push(image);
 				needles.push(item.needle);
+				transcriptImages.push({
+					path: image.path,
+					name: image.name,
+					mimeType: image.mimeType,
+					widthPx: image.size.width,
+					heightPx: image.size.height,
+					bytes: image.bytes,
+					number: item.number,
+				});
 			}
 		}
 		if (loaded.length === 0) {
 			return { action: "continue" };
 		}
+		pendingTranscriptImages.push(transcriptImages);
 		return {
 			action: "transform",
 			text: removePaths(event.text, needles),

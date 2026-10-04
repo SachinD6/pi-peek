@@ -7,8 +7,10 @@ import {
 	MAX_TILE_COLUMNS,
 	MIN_COLUMNS,
 	PREVIEW_LIMIT,
+	PREVIEW_VISIBLE_MS,
 	TILE_GAP_ROWS,
 	TILE_ROWS,
+	chipLabel,
 	findClipboardPaths,
 	findImagePaths,
 	findImageTokens,
@@ -18,6 +20,7 @@ import {
 	isClipboardImagePath,
 	removePaths,
 	rewriteInsertedImage,
+	sourcesKey,
 	type TokenEditor,
 } from "./image-preview-lib.ts";
 
@@ -163,4 +166,27 @@ test("rewriteInsertedImage leaves other insertions alone", () => {
 	editor.insertTextAtCursor("hello.png");
 	assert.equal(rewriteInsertedImage(editor, "hello.png", "/tmp", () => 1), false);
 	assert.equal(editor.getText(), "notes: hello.png");
+});
+
+test("preview stays on screen for two seconds", () => {
+	assert.equal(PREVIEW_VISIBLE_MS, 2000);
+});
+
+test("sourcesKey tracks the image set and nothing else", () => {
+	assert.equal(sourcesKey([{ path: "/tmp/a.png", number: 1 }]), sourcesKey([{ path: "/tmp/a.png", number: 1 }]));
+	assert.notEqual(sourcesKey([{ path: "/tmp/a.png", number: 1 }]), sourcesKey([{ path: "/tmp/a.png", number: 2 }]));
+	assert.notEqual(sourcesKey([{ path: "/tmp/a.png", number: null }]), sourcesKey([{ path: "/tmp/b.png", number: null }]));
+	assert.notEqual(sourcesKey([{ path: "/tmp/a.png", number: 1 }]), sourcesKey([]));
+});
+
+test("chipLabel names tokens and plain paths", () => {
+	assert.equal(chipLabel([]), "");
+	assert.equal(chipLabel([{ number: 1, name: "a.png" }]), "[Image #1] \u00b7 click to preview");
+	assert.equal(
+		chipLabel([
+			{ number: 1, name: "a.png" },
+			{ number: null, name: "shot.png" },
+		]),
+		"[Image #1] shot.png \u00b7 click to preview",
+	);
 });

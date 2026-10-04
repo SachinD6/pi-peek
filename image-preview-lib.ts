@@ -14,6 +14,7 @@ export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp"] as const;
 export const PREVIEW_LIMIT = 3;
 export const TILE_ROWS = 6;
 export const MAX_TILE_COLUMNS = 48;
+export const PREVIEW_VISIBLE_MS = 2000;
 export const CELL_ASPECT = 2;
 export const MIN_COLUMNS = 8;
 export const TILE_GAP_ROWS = 1;
@@ -102,6 +103,25 @@ export function imageToken(number: number): string {
 	return `[Image #${number}]`;
 }
 
+export interface PreviewSource {
+	path: string;
+	number: number | null;
+}
+
+/** Stable identity for a set of preview sources, so typing never restarts a load. */
+export function sourcesKey(sources: readonly PreviewSource[]): string {
+	return sources.map((source) => `${source.number ?? ""}\u0000${source.path}`).join("\u0001");
+}
+
+/** The one-line clickable label shown when the thumbnails are hidden. */
+export function chipLabel(images: readonly { number: number | null; name: string }[]): string {
+	if (images.length === 0) {
+		return "";
+	}
+	const labels = images.map((image) => (image.number === null ? image.name : imageToken(image.number)));
+	return `${labels.join(" ")} \u00b7 click to preview`;
+}
+
 export function removePaths(text: string, paths: readonly string[]): string {
 	return text
 		.split("\n")
@@ -155,7 +175,7 @@ export function rewriteInsertedImage(
 	return true;
 }
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
 	if (bytes < 1024) {
 		return `${bytes} B`;
 	}
