@@ -43,6 +43,12 @@ export function rewriteInsertedImage(editor: TokenEditor, inserted: string, tmpD
 export function removePaths(text: string, paths: readonly string[]): string;
 export function fitCells(size: Size | null, maxRows: number, maxColumns?: number): Cells;
 export function formatCaption(index: number, size: Size | null, bytes: number): string;
+export const IMAGE_CAP = 10;
+export const MIN_SIDE = 8;
+export function formatMime(mimeType: string): string;
+export function isTooSmall(size: Size): boolean;
+export function truncateMiddle(path: string, maxChars: number): string;
+export function overlayTitle(image: { number: number | null; mimeType: string; size: Size; bytes: number; name: string }): string;
 ```
 
 ```ts
@@ -55,11 +61,12 @@ interface LoadedImage {
   bytes: number;
   base64: string;
   mtimeMs: number;
+  number: number | null;
 }
 
 interface BandState {
   text: string;          // the editor text these images were derived from
-  images: LoadedImage[]; // first-appearance order, at most PREVIEW_LIMIT
+  images: LoadedImage[]; // first-appearance order, at most IMAGE_CAP
 }
 
 class ImagePreviewBand implements Component { /* render, handleMouse, invalidate */ }
@@ -70,7 +77,7 @@ export default function imagePreview(pi: ExtensionAPI): void;
 
 `BandState.text` is the single source of truth for what the band shows. `render(width)` samples `ctx.ui.getEditorText()`, returns the cached lines when the text is unchanged, and otherwise re-derives `images`. Deriving parses tokens with `findImagePaths`, drops non-files, loads each through a module-level `Map<string, LoadedImage>` keyed by `path + "\0" + mtimeMs + "\0" + size`, capped at 16 entries with oldest-first eviction. File reads use `readFileSync` and MIME sniffing uses `detectSupportedImageMimeTypeFromFile` from `@earendil-works/pi-coding-agent`. Only files whose sniffed MIME is `image/*` enter the state, so a missing or unreadable path produces no tile and never an error.
 
-A filmstrip, not a stack. The band renders one row of clickable labels, then the active image's tile at six rows, so any number of images costs seven rows. Clicking a label makes that image active and restarts the auto-hide timer. Clicking the tile calls `ctx.ui.custom` with `ImagePreviewOverlay`, which renders the image at 90% scale centered on a full-screen backdrop and calls `done(undefined)` on Esc, q, Enter, or a click outside the image rect. The full-screen backdrop is load-bearing: pi delivers mouse events to the overlay component only inside its own box, so the blank padding is what makes an outside click reach the component at all. Clicks on the image itself are consumed. A row of side-by-side images is not possible, because `compositeTuiLine` drops the second kitty sequence when two image lines meet horizontally; the probe is in the verification notes. The transcript entry reuses the same `selectorLine` in `TranscriptStrip`, so a sent message with ten images is two rows plus one thumbnail, not ten stacked images. `ImageTokenEditor.handleMouse` maps a click to a cursor offset and opens the overlay when that offset falls inside a token or an image path.
+A filmstrip, not a stack. The band renders one row of clickable labels, then the active image's tile at six rows, so any number of images costs seven rows. Clicking a label makes that image active and restarts the auto-hide timer. Clicking the tile calls `ctx.ui.custom` with `ImagePreviewOverlay`, which renders the image at 90% scale centered on a full-screen backdrop with a grok-style header (`Image #N \u2500 PNG \u00b7 WxH \u00b7 size \u00b7 name`, filename first when unnumbered) and a `Path:` footer, and calls `done(undefined)` on Esc, q, Enter, or a click outside the image rect. Side borders are skipped on purpose: kitty image rows must stay full-width, so only the title and footer carry the border language. Images with either side under 8 px are dropped at load, and sources are capped at ten per prompt, matching the reference. The full-screen backdrop is load-bearing: pi delivers mouse events to the overlay component only inside its own box, so the blank padding is what makes an outside click reach the component at all. Clicks on the image itself are consumed. A row of side-by-side images is not possible, because `compositeTuiLine` drops the second kitty sequence when two image lines meet horizontally; the probe is in the verification notes. The transcript entry reuses the same `selectorLine` in `TranscriptStrip`, so a sent message with ten images is two rows plus one thumbnail, not ten stacked images. `ImageTokenEditor.handleMouse` maps a click to a cursor offset and opens the overlay when that offset falls inside a token or an image path.
 
 Tokens live in a module-level `Map<number, string>` from number to path. `ImageTokenEditor` extends `CustomEditor` and overrides `insertTextAtCursor`. After pi's own paste handler inserts the temp path, the override backspaces exactly that path away, inserts `[Image #N]`, and leaves the cursor after the token, so the path never stays in the editor.
 

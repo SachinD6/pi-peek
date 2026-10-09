@@ -8,6 +8,7 @@ import type { Component, TuiMouseEvent, TuiMouseEventResult, TUI } from "@earend
 import { Image, Key, getImageDimensions, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
 	PREVIEW_VISIBLE_MS,
+	IMAGE_CAP,
 	chipLabel,
 	cursorOffset,
 	findClipboardPaths,
@@ -19,12 +20,15 @@ import {
 	imageToken,
 	imageTokenAt,
 	isClipboardImagePath,
+	isTooSmall,
 	MAX_TILE_COLUMNS,
 	MIN_COLUMNS,
+	overlayTitle,
 	removePaths,
 	rewriteInsertedImage,
 	sourcesKey,
 	TILE_ROWS,
+	truncateMiddle,
 } from "./image-preview-lib.ts";
 import type { Cells, PreviewSource, Size } from "./image-preview-lib.ts";
 
@@ -32,7 +36,7 @@ const WIDGET_KEY = "image-preview";
 const LOADED_CACHE_LIMIT = 16;
 const TILE_CACHE_LIMIT = 16;
 const OVERLAY_SCALE = 0.9;
-const OVERLAY_CHROME_ROWS = 2;
+const OVERLAY_CHROME_ROWS = 3;
 
 interface SelectorRange {
 	start: number;
@@ -155,6 +159,9 @@ async function loadImage(path: string): Promise<LoadedImage | null> {
 		if (dimensions === null || dimensions.widthPx <= 0 || dimensions.heightPx <= 0) {
 			return null;
 		}
+		if (isTooSmall({ width: dimensions.widthPx, height: dimensions.heightPx })) {
+			return null;
+		}
 		return cacheLoadedImage(key, {
 			path,
 			name: basename(path),
@@ -220,7 +227,7 @@ function previewSources(text: string): PreviewSource[] {
 			sources.push({ path, number: null });
 		}
 	}
-	return sources;
+	return sources.slice(0, IMAGE_CAP);
 }
 
 const pendingTranscriptImages: TranscriptImage[][] = [];
@@ -352,12 +359,27 @@ class ImagePreviewOverlay implements Component {
 		const columns = Math.max(MIN_COLUMNS, Math.round(width * OVERLAY_SCALE));
 		const cells = fitCells(this.image.size, rows, columns);
 		const close = this.theme.fg("muted", "\u2715 close");
-		const name = truncateToWidth(this.image.name, Math.max(1, cells.columns - visibleWidth(close) - 2), "\u2026");
-		const gap = Math.max(1, cells.columns - visibleWidth(name) - visibleWidth(close));
+		const title = truncateToWidth(
+			overlayTitle({
+				number: this.image.number,
+				mimeType: this.image.mimeType,
+				size: this.image.size,
+				bytes: this.image.bytes,
+				name: this.image.name,
+			}),
+			Math.max(1, cells.columns - visibleWidth(close) - 2),
+			"\u2026",
+		);
+		const gap = Math.max(1, cells.columns - visibleWidth(title) - visibleWidth(close));
 		const imageLines = createImage(this.theme, this.image, cells).render(width);
+		const pathLine = this.theme.fg(
+			"dim",
+			truncateToWidth(`Path: ${truncateMiddle(this.image.path, Math.max(1, cells.columns - 6))}`, cells.columns, "\u2026"),
+		);
 		const content = [
-			`${this.theme.fg("accent", name)}${" ".repeat(gap)}${close}`,
+			`${this.theme.fg("accent", title)}${" ".repeat(gap)}${close}`,
 			...imageLines,
+			pathLine,
 			this.theme.fg("dim", "Esc \u00b7 q \u00b7 \u2715 close"),
 		];
 		// Fill the screen so a click on the margins still reaches this component.
@@ -748,13 +770,14 @@ export default function imagePreview(pi: ExtensionAPI): void {
 		for (const path of findClipboardPaths(event.text, dir)) {
 			pending.push({ path, needle: path, number: null });
 		}
-		if (pending.length === 0) {
+		const capped = pending.slice(0, IMAGE_CAP);
+		if (capped.length === 0) {
 			return { action: "continue" };
 		}
 		const loaded: LoadedImage[] = [];
 		const needles: string[] = [];
 		const transcriptImages: TranscriptImage[] = [];
-		for (const item of pending) {
+		for (const item of capped) {
 			const image = await loadImage(isAbsolute(item.path) ? item.path : resolve(dir, item.path));
 			if (image !== null) {
 				loaded.push(image);
