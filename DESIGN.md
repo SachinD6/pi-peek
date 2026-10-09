@@ -20,7 +20,7 @@ ctx.ui.custom(overlayFactory, { overlay: true, overlayOptions: { width: "90%", m
 
 ## Shape
 
-Two source files. `image-preview-lib.ts` is pure and has no pi imports. `index.ts` is the extension entry, imported by pi from a symlinked directory at `~/.pi/agent/extensions/image-preview`.
+Two source files. `image-preview-lib.ts` is pure and has no pi imports. `index.ts` is the extension entry, loaded by pi from the `extensions/image-preview` directory of the installed package.
 
 ```ts
 // image-preview-lib.ts
@@ -134,7 +134,7 @@ Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the 
 | Attachment on send | session user message is `[('text', ' x what is this'), ('image', 'image/png')]` |
 | No-graphics fallback | caption plus `[Image: pi-clipboard-verify1.png [image/png] 40x20]`, zero kitty sequences |
 
-Two findings from verification that the sketch had wrong. The first symlink attempt linked the single entry file, and the loader failed with `Cannot find module './image-preview-lib.ts'` because relative imports resolve against the link path. The install is a directory symlink with `index.ts`.
+Two findings from verification that the sketch had wrong. The first symlink attempt linked the single entry file, and the loader failed with `Cannot find module './image-preview-lib.ts'` because relative imports resolve against the link path. A dev install is a directory symlink to `extensions/image-preview`.
 
 The flicker root cause was a state reset on every editor text change, so each keystroke blanked the tiles for at least one frame and repainted the band. `sourcesKey`, a no-empty-intermediate-state derive, and a mode-aware render cache removed it. The pty check measures zero image uploads across a keystroke.
 
