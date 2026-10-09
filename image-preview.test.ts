@@ -3,9 +3,11 @@ import test from "node:test";
 import {
 	BACKSPACE,
 	CELL_ASPECT,
+	IMAGE_CAP,
 	IMAGE_EXTENSIONS,
 	MAX_TILE_COLUMNS,
 	MIN_COLUMNS,
+	MIN_SIDE,
 	PREVIEW_VISIBLE_MS,
 	TILE_ROWS,
 	chipLabel,
@@ -15,13 +17,17 @@ import {
 	findImageTokens,
 	fitCells,
 	formatCaption,
+	formatMime,
 	imagePathAt,
 	imageToken,
 	imageTokenAt,
 	isClipboardImagePath,
+	isTooSmall,
+	overlayTitle,
 	removePaths,
 	rewriteInsertedImage,
 	sourcesKey,
+	truncateMiddle,
 	type TokenEditor,
 } from "./image-preview-lib.ts";
 
@@ -31,6 +37,8 @@ test("constants match the preview contract", () => {
 	assert.equal(MAX_TILE_COLUMNS, 48);
 	assert.equal(CELL_ASPECT, 2);
 	assert.equal(MIN_COLUMNS, 8);
+	assert.equal(IMAGE_CAP, 10);
+	assert.equal(MIN_SIDE, 8);
 });
 
 test("findImagePaths keeps image tokens in first-appearance order", () => {
@@ -190,6 +198,28 @@ test("rewriteInsertedImage leaves other insertions alone", () => {
 
 test("preview stays on screen for two seconds", () => {
 	assert.equal(PREVIEW_VISIBLE_MS, 2000);
+});
+
+test("grok overlay helpers label the image like the reference", () => {
+	assert.equal(formatMime("image/png"), "PNG");
+	assert.equal(formatMime("image/jpeg"), "JPEG");
+	assert.equal(formatMime("image/gif"), "GIF");
+	assert.equal(formatMime("image/webp"), "WebP");
+	assert.equal(formatMime("image/svg+xml"), "image/svg+xml");
+	assert.equal(isTooSmall({ width: 7, height: 100 }), true);
+	assert.equal(isTooSmall({ width: 100, height: 7 }), true);
+	assert.equal(isTooSmall({ width: 8, height: 8 }), false);
+	assert.equal(
+		overlayTitle({ number: 1, mimeType: "image/png", size: { width: 40, height: 20 }, bytes: 214, name: "a.png" }),
+		"Image #1 \u2500 PNG \u00b7 40x20 \u00b7 214 B \u00b7 a.png",
+	);
+	assert.equal(
+		overlayTitle({ number: null, mimeType: "image/jpeg", size: { width: 10, height: 10 }, bytes: 2048, name: "shot.jpg" }),
+		"shot.jpg \u2500 JPEG \u00b7 10x10 \u00b7 2.0 KB",
+	);
+	assert.equal(truncateMiddle("/tmp/pi-clipboard-abcdef.png", 20), "/tmp/pi-...bcdef.png");
+	assert.equal(truncateMiddle("short.png", 20), "short.png");
+	assert.equal(truncateMiddle("abcdef", 0), "");
 });
 
 test("sourcesKey tracks the image set and nothing else", () => {

@@ -16,6 +16,10 @@ export const MAX_TILE_COLUMNS = 48;
 export const PREVIEW_VISIBLE_MS = 2000;
 export const CELL_ASPECT = 2;
 export const MIN_COLUMNS = 8;
+/** Grok parity: at most ten images per prompt, toast when the cap hits. */
+export const IMAGE_CAP = 10;
+/** Grok parity: backend APIs reject images with either side under 8 px. */
+export const MIN_SIDE = 8;
 
 const CLIPBOARD_NAME_PATTERN = /^pi-clipboard-.*\.(png|jpg|jpeg|gif|webp)$/;
 const UNKNOWN_SIZE: Size = { width: 16, height: 10 };
@@ -216,6 +220,55 @@ export function formatBytes(bytes: number): string {
 		return `${(bytes / 1024).toFixed(1)} KB`;
 	}
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Grok parity: short uppercase format label for the overlay title. */
+export function formatMime(mimeType: string): string {
+	switch (mimeType) {
+		case "image/png":
+			return "PNG";
+		case "image/jpeg":
+			return "JPEG";
+		case "image/gif":
+			return "GIF";
+		case "image/webp":
+			return "WebP";
+		case "image/bmp":
+			return "BMP";
+		case "image/tiff":
+			return "TIFF";
+		default:
+			return mimeType;
+	}
+}
+
+/** Either pixel side under the backend minimum. */
+export function isTooSmall(size: Size): boolean {
+	return size.width < MIN_SIDE || size.height < MIN_SIDE;
+}
+
+/** Grok parity: middle-truncate a path footer so head and tail stay readable. */
+export function truncateMiddle(path: string, maxChars: number): string {
+	if (maxChars <= 0) {
+		return "";
+	}
+	const chars = [...path];
+	if (chars.length <= maxChars) {
+		return path;
+	}
+	if (maxChars <= 3) {
+		return chars.slice(0, maxChars).join("");
+	}
+	const keep = Math.floor((maxChars - 3) / 2);
+	const endKeep = maxChars - 3 - keep;
+	return `${chars.slice(0, keep).join("")}...${chars.slice(chars.length - endKeep).join("")}`;
+}
+
+/** Grok parity: `Image #N \u2500 PNG \u00b7 WxH \u00b7 size \u00b7 name`, filename first when unnumbered. */
+export function overlayTitle(image: { number: number | null; mimeType: string; size: Size; bytes: number; name: string }): string {
+	const label = image.number === null ? image.name : `Image #${image.number}`;
+	const meta = `${formatMime(image.mimeType)} \u00b7 ${image.size.width}x${image.size.height} \u00b7 ${formatBytes(image.bytes)}`;
+	return image.number === null ? `${label} \u2500 ${meta}` : `${label} \u2500 ${meta} \u00b7 ${image.name}`;
 }
 
 export function formatCaption(index: number, size: Size | null, bytes: number): string {
