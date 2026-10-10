@@ -2,7 +2,8 @@
 
 See pasted images right above your [pi](https://github.com/earendil-works/pi) prompt. Thumbnails appear the moment an image is referenced, and the model receives the pixels.
 
-![Thumbnail band above the editor](docs/band.png)
+
+https://github.com/user-attachments/assets/cbd0e5c5-27ff-4736-81d0-3203b78291ef
 
 ## Features
 
@@ -12,9 +13,8 @@ See pasted images right above your [pi](https://github.com/earendil-works/pi) pr
 - **Editor tokens.** Pasted images show as `[Image #1]`, `[Image #2]`, and so on instead of a temp path. Click a token to open it.
 - **Real attachments on send.** Pasted images become message attachments, their tokens leave the text, and the transcript keeps a compact filmstrip.
 
-![Fullscreen image view](docs/overlay.png)
+<img width="1743" height="820" alt="image" src="https://github.com/user-attachments/assets/e1e974a4-2ae1-4183-9c85-9edd61fc8b6f" />
 
-![Transcript filmstrip after send](docs/transcript.png)
 
 ## Install
 
