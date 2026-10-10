@@ -14,6 +14,6 @@
   },
   "pi": {
     "extensions": ["./extensions/image-preview/index.ts"],
-    "image": "https://raw.githubusercontent.com/SachinD6/pi-peek/main/docs/overlay.png"
+    "image": "https://github.com/user-attachments/assets/e1e974a4-2ae1-4183-9c85-9edd61fc8b6f"
   }
 }

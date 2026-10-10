@@ -118,7 +118,7 @@ Write `image-preview-lib.ts`, `index.ts`, and `image-preview.test.ts`, then run 
 
 ## Verification
 
-Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the symlinked directory. The rerunnable checks live in `verify-tui.py` (16 checks), and `node --test image-preview.test.ts` covers the pure helpers (18 pass, 0 fail).
+Measured 2026-10-04 against pi 1.0.2 in a 120x40 pty, extension loaded from the symlinked directory. The rerunnable checks live in `scripts/verify-tui.py` (16 checks), and `node --test image-preview.test.ts` covers the pure helpers (18 pass, 0 fail).
 
 | Check | Result |
 | --- | --- |
@@ -138,7 +138,7 @@ Two findings from verification that the sketch had wrong. The first symlink atte
 
 The flicker root cause was a state reset on every editor text change, so each keystroke blanked the tiles for at least one frame and repainted the band. `sourcesKey`, a no-empty-intermediate-state derive, and a mode-aware render cache removed it. The pty check measures zero image uploads across a keystroke.
 
-The token swap is covered by a unit test with a cursor-preserving fake editor. It is not covered by a live paste in `verify-tui.py` because that would require putting a test image on the system clipboard, which this project no longer does after a leftover fixture confused a real session.
+The token swap is covered by a unit test with a cursor-preserving fake editor. It is not covered by a live paste in `scripts/verify-tui.py` because that would require putting a test image on the system clipboard, which this project no longer does after a leftover fixture confused a real session.
 
 The kitty sequence count alone was misleading at first because pi's startup logo also uses the kitty protocol. The caption row is the reliable marker.
 
